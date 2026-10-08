@@ -30,7 +30,7 @@ jobs:
       id-token: write        # REQUIRED: mints the OIDC token for npm
       pull-requests: write   # Changesets' "Version Packages" PR
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
