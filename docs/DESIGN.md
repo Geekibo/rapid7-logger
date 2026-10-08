@@ -1,0 +1,1077 @@
+# Design: a Rapid7 InsightOps logger for Node and Next.js
+
+**Status:** design — implementation not started · **Last updated:** 2026-10-08
+
+This is the design document and rationale for `@geekibo/rapid7-logger`. It is the **source of
+truth** for the package's architecture, its delivery contract, and the endpoint findings the
+implementation depends on. Issues in this repository reference its section numbers.
+
+Read §2 before writing any transport code: the endpoint has three non-obvious behaviours that
+dictate the design, and none of them are in the vendor documentation.
+
+---
+
+## 1. Why this package should exist
+
+### 1.1 The gap is real and verified
+
+There is no maintained JavaScript library for shipping logs to Rapid7 InsightOps. Checked
+2026-10-08 against the npm registry:
+
+| Package | Latest | Last publish | Verdict |
+|---|---|---|---|
+| `r7insight_node` | 3.3.1 | **2022-06-23** | Rapid7's own client. 4 years stale. TCP-based (see §1.2). |
+| `le_node` | 1.8.0 | **2018-10-25** | Predecessor, Logentries-era. Abandoned. |
+| `winston-logentries` | 3.0.0 | **2016-11-14** | Marked **Deprecated** by its author. |
+| `winston-r7insight` | — | — | Does not exist. |
+| `r7insight` | — | — | Does not exist. |
+| `pino-insightops` | — | — | Does not exist. |
+
+Nothing targets Next.js. Nothing is aware of Server Components, Server Actions, the Edge
+runtime, or the serverless freeze problem (§7.3) — all of which change what a correct logger
+has to do.
+
+### 1.2 The incumbent transport has a silent data-loss bug
+
+This is the substantive reason not to just wrap `r7insight_node`. Both it and the .NET
+`Serilog.Sinks.InsightOps` sink push events through R7Insight's `AsyncLogger`, which buffers
+over a long-lived TCP socket. That buffer **silently drops isolated, low-frequency events**: a
+lone log line sits in the socket buffer and is only flushed out by subsequent traffic, so quiet
+services lose logs entirely.
+
+This is not a theory. It was reproduced and documented during a .NET migration in July 2026:
+*"verified: a lone event never arrived; bursts did."* The failure mode is vicious because it
+inverts your intuition — logging looks fine under load and fails exactly when a quiet service
+emits the one error you needed to see.
+
+The fix is to abandon TCP and use the **HTTP webhook**, one event per request. A lone event is
+then ingested in ~1 s.
+
+### 1.3 Prior art worth copying, and prior art worth avoiding
+
+**Worth copying.** This problem has already been solved properly once, in .NET, and that
+implementation has production mileage across a fleet of services. Its endpoint research is what
+§2 records, and porting it saves this package from repeating a month of discovery. The design
+here is a port, not an invention.
+
+**Worth avoiding.** The pattern below turns up repeatedly in the wild — it is what people write
+when they reach for the webhook directly, and every flaw in it is instructive:
+
+```ts
+const INSIGHTOPS_TOKEN = "YOUR_LOG_TOKEN"; // Replace with your token
+const INSIGHTOPS_URL = `https://webhook.logentries.com/noformat/logs/${INSIGHTOPS_TOKEN}`;
+
+export function logToInsightOps(message: string, level = "info", meta?: object) {
+  fetch(INSIGHTOPS_URL, { method: "POST", body: JSON.stringify({ /* ... */ }) })
+    .catch((err) => console.error("InsightOps logging failed", err));
+}
+```
+
+Three fatal flaws, each of which this package must make structurally impossible:
+
+1. **The placeholder token never gets filled in.** It is the kind of line that ships to a
+   default branch and sits there.
+2. **Nothing imports it.** Dead code, and nobody notices — because a logger that is never
+   called looks exactly like a logger that works.
+3. **It runs in the browser.** A bare `fetch` from client code means the ingestion token is
+   served to every visitor, who can then write anything they like into your log estate. This is
+   the single most important thing to design out (§6.5).
+
+### 1.4 One honest caveat before you build
+
+Rapid7's own documentation pages for InsightOps now carry a banner stating the product **"is no
+longer sold"** and that the pages may be out of date. Existing customers still run on it — the
+ingestion endpoint is live and was verified working for this document — but you are building
+against a product in sustaining mode.
+
+**This shapes the architecture, not the decision.** Build it, because the need is immediate and
+real; but put the wire protocol behind a small `Transport` interface (§4.3) so that targeting a
+different log backend later is an additive change, not a rewrite. Do not ship a second transport
+on day one — that is speculative generality. Just don't weld the core to the webhook.
+
+---
+
+## 2. What the endpoint actually does
+
+Everything in this section is **verified**, either against the live endpoint during the .NET
+work (dated below) or against Rapid7's current documentation fetched 2026-10-08. Treat anything
+not listed here as unknown rather than assuming it behaves sensibly.
+
+### 2.1 The wire protocol
+
+```
+POST https://{region}.webhook.logs.insight.rapid7.com/v1/noformat/{token}
+Content-Type: text/plain
+
+<one single-line log entry>\n
+```
+
+| Property | Value | Provenance |
+|---|---|---|
+| Regions | `eu`, `us`, `au`, `ca`, `jp` — the region is the subdomain | .NET impl; Rapid7 docs confirm `us`/`eu` |
+| Token | The per-log ingestion token (GUID), in the **path** | Rapid7 docs |
+| Success status | **`204 No Content`** | Rapid7 docs (sample response) |
+| Lone-event latency | ~1 s ingestion, ~2 s end-to-end delivery | Verified live 2026-07-16 |
+| Body size limit | **Not documented.** Assume nothing; truncate defensively (§5.4) | Rapid7 docs state no limit |
+| Rate limit | **Not documented.** No `Retry-After` behaviour specified | Rapid7 docs state no limit |
+| Idempotency / dedup | **None.** Retries can duplicate (§7.1) | .NET impl design note |
+
+### 2.2 The newline rule — the single most important constraint
+
+`/v1/noformat` **does not accept a newline-delimited batch.** You cannot post ten lines in one
+request and get ten entries.
+
+Two sources, which disagree on the detail but agree on the consequence:
+
+- The .NET implementation verified against the live EU endpoint (2026-07-16) that the endpoint
+  **keeps only the first line** of a multi-line body — the rest is discarded.
+- Rapid7's own JavaScript example strips line feeds with the comment *"strip line feeds or
+  they'll appear as individual entries."*
+
+Either way the rule for an implementer is identical and non-negotiable:
+
+> **One event per HTTP request, and the body must contain no interior newlines.**
+
+So a multi-line message or a stack trace must be **flattened** (interior `\r\n` and `\n`
+collapsed to spaces) before posting, or it will be either truncated or shredded into unrelated
+entries. This is an endpoint requirement, not a formatting preference — it must not be
+configurable.
+
+### 2.3 Consequences for throughput
+
+One request per event has a cost that must be designed for rather than discovered in
+production:
+
+- 1,000 events/minute ≈ 17 requests/second. Fine, but it needs **connection reuse** (keep-alive)
+  and a **concurrency cap**, or you will exhaust sockets under a burst.
+- A bounded queue with **drop-on-overflow** is mandatory. The alternative — blocking the
+  application to log — is strictly worse than losing log lines.
+
+### 2.4 `noformat` means what it says
+
+The path segment is `noformat`: the body is ingested unparsed. There is **no documented JSON or
+key-value ingestion endpoint**. So if you want structured data queryable in Rapid7, you encode
+it into the single line yourself. Rapid7's examples do post JSON bodies to `noformat`, but the
+docs never state how (or whether) they are parsed or indexed — so treat JSON-in-body as "it will
+be stored and full-text searchable", not as "it will be indexed into fields".
+
+### 2.5 The clickable-correlation trick
+
+This is a hard-won UI detail from the .NET work (verified against a live log 2026-08-21) that is
+worth porting verbatim, because nobody would ever deduce it:
+
+Rapid7's log viewer only renders a token as a **clickable** value — letting you pivot to every
+entry sharing it — when the token parses as the **key of a key/value pair**. A bare correlation
+ID in the line is not clickable.
+
+The working form is the ID, a colon, then a literal underscore:
+
+```
+[14:22:07 ERR] 9f6f2b2b140b: _ Survey export failed for run 44
+                            ^^^ load-bearing
+```
+
+- **The delimiter is required.** Without it the ID is not clickable in any form.
+- **The underscore is the pair's value, and it is also required.** Without it, the *message*
+  supplies the value — so a message that carries its own `Label: value` pairs chains onto the
+  stamp and the line loses its click entirely.
+- **Emit the ID in full.** Let consumers shorten it; a library must not choose a truncation.
+
+---
+
+## 3. Naming and scope
+
+### 3.1 Package name
+
+Recommendation: **`@geekibo/rapid7-logger`**.
+
+| Candidate | Assessment |
+|---|---|
+| `@geekibo/rapid7-logger` | **Recommended.** Says what it does, findable by the search that fails today ("rapid7 node logger"), and scoped so the name is yours. |
+| `@geekibo/insightops-logger` | Accurate but ties the name to a product brand that is being retired. |
+| `@geekibo/logger` | Over-claims. Invites scope creep into a general logging framework. |
+| `r7insight-next` | Unscoped names on public npm are a squatting and trust liability. |
+
+### 3.2 In scope for v1
+
+- Structured, levelled logging from **Node.js server processes**.
+- First-class **Next.js** integration: `instrumentation.ts` error capture, Server Actions,
+  Route Handlers, and correct flushing under serverless (§7.3).
+- Reliable delivery semantics: bounded queue, bounded retry, never throws, flush on shutdown.
+- Correlation ID propagation (§6.4) and redaction hooks (§6.6).
+- TypeScript types, dual ESM/CJS, zero runtime dependencies.
+
+### 3.3 Explicitly out of scope for v1
+
+| Excluded | Why |
+|---|---|
+| **Browser / client-side logging** | Exposes the ingestion token to every visitor. If ever wanted, it must go via a server route handler, never direct. See §6.5. |
+| Log *querying* | A separate concern and a separate credential. Belongs in a sibling tool, not the logger. |
+| Winston / Pino transports | Plausible v1.1 additions once the core is proven. Not a reason to delay v1. |
+| OpenTelemetry bridge | Large surface, different audience. Revisit only on demand. |
+| Alternative backends | Keep the `Transport` seam (§4.3); ship one implementation. |
+
+---
+
+## 4. Architecture
+
+### 4.1 Layering
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│ Entry points                                                 │
+│   @geekibo/rapid7-logger         → createLogger()  (Node)    │
+│   @geekibo/rapid7-logger/next    → Next.js helpers           │
+│   @geekibo/rapid7-logger/edge    → immediate-send variant    │
+└───────────────────────────┬──────────────────────────────────┘
+                            │
+┌───────────────────────────▼──────────────────────────────────┐
+│ Core (runtime-agnostic, no Node built-ins)                   │
+│   Logger      levels, child loggers, bound context           │
+│   Formatter   LogEvent → one single physical line            │
+│   Redactor    strip/mask before anything leaves the process  │
+│   Queue       bounded buffer, drop-on-overflow, flush()      │
+└───────────────────────────┬──────────────────────────────────┘
+                            │ Transport interface
+┌───────────────────────────▼──────────────────────────────────┐
+│ Transports                                                   │
+│   Rapid7WebhookTransport   fetch → /v1/noformat, retry       │
+│   ConsoleTransport         local dev, tests                  │
+│   MemoryTransport          assertions in unit tests          │
+└──────────────────────────────────────────────────────────────┘
+```
+
+The core must use **only** `fetch`, `AbortController`, timers and standard JS — no `node:*`
+imports — so the same core runs in Node, Edge and Workers. Anything Node-specific
+(`process.on('SIGTERM')`) lives in the Node entry point.
+
+### 4.2 Package exports
+
+```json
+{
+  "name": "@geekibo/rapid7-logger",
+  "version": "0.1.0",
+  "description": "Reliable Rapid7 InsightOps logging for Node.js and Next.js",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/geekibo/rapid7-logger.git"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "engines": { "node": ">=20.9.0" },
+  "exports": {
+    ".":      { "types": "./dist/index.d.ts",  "import": "./dist/index.js",  "require": "./dist/index.cjs" },
+    "./next": { "types": "./dist/next.d.ts",   "import": "./dist/next.js",   "require": "./dist/next.cjs" },
+    "./edge": { "types": "./dist/edge.d.ts",   "import": "./dist/edge.js" }
+  },
+  "files": ["dist", "README.md", "LICENSE"],
+  "dependencies": {},
+  "peerDependencies": { "next": ">=15.0.0" },
+  "peerDependenciesMeta": { "next": { "optional": true } },
+  "publishConfig": { "access": "public" }
+}
+```
+
+Notes:
+
+- **Zero runtime dependencies.** A logger is infrastructure; every dependency it carries is a
+  supply-chain liability inherited by every consumer. Notably, the .NET implementation this
+  design ports treats *shedding* a transitive `log4net` dependency as one of its headline
+  features — same principle.
+- **`next` is an optional peer**, so plain Node consumers never pull it in.
+- **No `/edge` CJS build** — the Edge runtime is ESM-only.
+- `engines.node >= 20.9` matches Next.js 16's floor and guarantees global `fetch`. Note the
+  **release workflow** needs Node >= 22.14 for trusted publishing (§10.2) — that is a CI
+  requirement, not a consumer one.
+- **`repository.url` must exactly match the GitHub repository.** npm's trusted publishing
+  rejects a mismatch at publish time (§10.3), and `publishConfig.access: public` means a scoped
+  package never fails its first release for want of `--access public`.
+
+### 4.3 The Transport seam
+
+```ts
+export interface LogEvent {
+  readonly timestamp: Date;
+  readonly level: Level;                  // 'trace'|'debug'|'info'|'warn'|'error'|'fatal'
+  readonly message: string;
+  readonly context: Readonly<Record<string, unknown>>;
+  readonly error?: { name: string; message: string; stack?: string; digest?: string };
+}
+
+export interface Transport {
+  /** Deliver one event. MUST NOT throw. MUST resolve even on permanent failure. */
+  send(event: LogEvent): Promise<void>;
+  /** Best-effort drain of anything buffered inside the transport. */
+  flush(timeoutMs?: number): Promise<void>;
+}
+```
+
+Two invariants, both of which must be enforced by tests:
+
+1. **`send` never throws and never rejects.** A logging failure must never fail the user's
+   request. This is the rule that the dead `logToInsightOps` got right and almost nothing else.
+2. **`flush` is bounded.** It takes a timeout and returns when it elapses, whether or not the
+   queue drained. An unbounded flush on shutdown is a hung pod.
+
+---
+
+## 5. The public API
+
+### 5.1 Creating a logger
+
+```ts
+import { createLogger } from '@geekibo/rapid7-logger';
+
+export const log = createLogger({
+  token:   process.env.RAPID7_TOKEN,        // undefined ⇒ console-only, no throw
+  region:  process.env.RAPID7_REGION ?? 'eu',
+  service: 'my-app',                        // stamped on every event
+  env:     process.env.APP_ENV ?? 'local',
+  level:   process.env.LOG_LEVEL  ?? 'info',
+});
+```
+
+**A missing token must not throw.** It degrades to the console transport and emits exactly one
+warning. Rationale, learned the hard way on the .NET side: an unconditional sink that throws on
+a missing token breaks every integration test and every local run, and the workaround people
+reach for is a compile-time `#if DEBUG` guard that then diverges from production. Make the
+graceful path the only path.
+
+### 5.2 Logging
+
+```ts
+log.info('Survey published', { surveyId: 42, runId: 44 });
+log.warn('Material sync lock contended', { holder: 'pod-7' });
+log.error('Export failed', err, { surveyId: 42 });   // Error is a first-class 2nd arg
+
+const reqLog = log.child({ traceId, userId });        // bound context, inherited
+reqLog.debug('cache miss', { key });
+
+await log.flush(2000);                                 // bounded, explicit
+```
+
+Design choices worth stating:
+
+- **`Error` is a positional argument**, not a context key. It is the thing people most often
+  get wrong (`{ error: err }` serialises to `{}` because `Error` has non-enumerable fields), so
+  the API should make the right thing the easy thing and normalise `stack` itself.
+- **`child()` returns a new logger with merged context.** This is how a correlation ID reaches
+  every line without being threaded through every function signature.
+- **Levels are a fixed set**, mapped to the three-letter monikers Rapid7 users already search
+  for: `TRC DBG INF WRN ERR FTL`.
+
+### 5.3 Line format
+
+Default output, deliberately matching the shape existing Rapid7 saved searches and alerts
+already target:
+
+```
+[HH:mm:ss LVL] <traceId>: _ message key=value key2=value2
+```
+
+- `[HH:mm:ss LVL] ` prefix — familiar, and the level is greppable.
+- The correlation stamp per §2.5, emitted **only when a correlation ID is present**. This
+  conditionality is why it is built by the formatter rather than expressed as a user template:
+  a plain template string cannot omit a field when it is absent.
+- Context as trailing `key=value` pairs — scannable, and each key is clickable in Rapid7 for
+  free, since they already parse as key/value pairs.
+- **Then flattened to a single physical line, unconditionally** (§2.2).
+
+Allow a full `format: (event) => string` override for people with existing parsers, but keep
+one-event-per-request and newline-flattening outside the user's reach — they are correctness,
+not style.
+
+### 5.4 Defensive truncation
+
+Rapid7 documents no body-size limit, which means there is one and you will find it at 3 a.m.
+Default to a `maxBytes` of 32 KiB per entry, truncating with a visible marker:
+
+```
+… [truncated 148231 of 180503 bytes]
+```
+
+A truncated line that says so is diagnosable. A silently cut line sends you looking for a bug
+that is in your logger.
+
+---
+
+## 6. Next.js integration
+
+### 6.1 Error capture via `instrumentation.ts`
+
+Next.js exposes a server-wide error hook. The signature below is from the Next.js 16.4 docs
+(verified 2026-10-08) — note `error` is typed `unknown`, so it must be narrowed:
+
+```ts
+// instrumentation.ts  (project root, or src/)
+import type { Instrumentation } from 'next';
+import { log } from '@/lib/log';
+
+export const onRequestError: Instrumentation.onRequestError = async (
+  error,      // unknown — narrow before use
+  request,    // { path, method, headers }
+  context,    // { routerKind, routePath, routeType, renderSource, revalidateReason, renderType }
+) => {
+  await log.error('Unhandled server error', error, {
+    path:       request.path,
+    method:     request.method,
+    routePath:  context.routePath,
+    routeType:  context.routeType,   // 'render' | 'route' | 'action' | 'proxy'
+    routerKind: context.routerKind,
+  });
+};
+
+export async function register() {
+  // Runs once per server instance, before any request is served.
+}
+```
+
+The package should ship a one-liner for this:
+
+```ts
+export const onRequestError = createRequestErrorHandler(log);
+```
+
+Two caveats to document prominently, because both cause silent gaps:
+
+1. **`onRequestError` only sees errors that escape.** Code that catches, logs to `console.error`
+   and rethrows a sanitised error gives this hook the *sanitised* error — the original cause
+   never arrives. So this hook is a safety net, **not** a substitute for replacing
+   `console.error` call sites with the logger.
+2. **The error instance may not be the one thrown.** React can process errors during Server
+   Component rendering; `error.digest` is what correlates the server line to what the browser
+   saw. Always log the digest.
+
+### 6.2 Server Actions and Route Handlers
+
+No framework hook here — this is ordinary call-site logging, and it is where the real value is.
+The recommended pattern is a thin wrapper that supplies correlation and timing:
+
+```ts
+'use server';
+import { withLogging } from '@geekibo/rapid7-logger/next';
+
+export const publishSurvey = withLogging('publishSurvey', async (log, id: number) => {
+  log.info('publishing', { id });
+  const res = await api.publish(id);
+  log.info('published', { id, status: res.status });
+  return res;
+});
+```
+
+`withLogging` should: create a child logger with a fresh or inherited trace ID, log the start
+and the outcome, log any thrown error **and rethrow it unchanged**, record duration, and
+schedule the flush (§7.3). It must never swallow an exception — a logging wrapper that changes
+control flow is a bug factory.
+
+### 6.3 The Edge runtime
+
+`instrumentation.ts` runs in both Node and Edge; `process.env.NEXT_RUNTIME` distinguishes them.
+Edge is materially different:
+
+- `fetch` exists; Node built-ins and `process.on` do not.
+- There is **no reliable background timer** — an Edge invocation can be torn down the moment the
+  response is returned, so a 2-second batching window may never elapse.
+
+Therefore `/edge` exports an **immediate-send** logger: every call posts straight away and the
+caller is expected to `await` or hand the promise to `after()`. Document the trade (added
+latency per log line) rather than pretending the batching logger works there.
+
+### 6.4 Correlation — the highest-value feature
+
+A logger that produces unlinked lines is a modest upgrade on `console.error`. A logger that lets
+you select a request and see every line it produced — across the web tier *and* the API tier —
+is a different tool.
+
+The mechanism should be W3C Trace Context, because it is the standard and it interoperates with
+Application Insights and OpenTelemetry:
+
+1. Read `traceparent` from the inbound request; generate one if absent.
+2. Hold it in `AsyncLocalStorage` (Node) so `log.child()` picks it up with no plumbing.
+3. **Propagate it outbound** — attach `traceparent` to every call your API client makes.
+4. Stamp it on every line using the clickable form in §2.5.
+
+Step 3 is the one people skip, and it is the one that makes the feature worth having. Pair it
+with a matching enricher on the backend and one click pivots across both tiers.
+
+Ship a small, documented helper rather than a framework:
+
+```ts
+import { withTrace, currentTraceId } from '@geekibo/rapid7-logger/next';
+```
+
+`AsyncLocalStorage` is unavailable on Edge; fall back to explicit passing there.
+
+### 6.5 Making browser misuse structurally impossible
+
+Recall §1.3: the naive approach ships the ingestion token to every browser. Four defences,
+layered, because documentation alone demonstrably does not work:
+
+1. **`import 'server-only'`** at the top of the Next entry point. Importing it from a Client
+   Component becomes a **build error**, not a runtime surprise.
+2. **Read the token only from a non-`NEXT_PUBLIC_` variable**, so Next.js cannot inline it into
+   the client bundle even if someone tries.
+3. **No browser-ish fields in the core** — no `navigator`, no `window`.
+4. **A README section stating the rule and the reason**, and pointing at the route-handler
+   pattern as the sanctioned way to get client errors server-side.
+
+### 6.6 Redaction
+
+The package will be pointed at applications handling session data, account identifiers and
+user-submitted content. Static analysis routinely flags exactly this pattern (clear-text
+logging of sensitive information), so redaction belongs in the library, on by default:
+
+```ts
+createLogger({
+  redact: {
+    keys: ['password', 'token', 'authorization', 'cookie', 'secret', 'apiKey'],
+    patterns: [/\b[\w.%+-]+@[\w.-]+\.[A-Za-z]{2,}\b/g],   // email
+    replacement: '[redacted]',
+  },
+});
+```
+
+Defaults should cover the obvious credential-shaped keys and bearer tokens. Redaction must run
+**before** the formatter, must apply to nested objects, and must be impossible to bypass by
+logging an object instead of a string.
+
+---
+
+## 7. Reliability semantics
+
+State these in the README as a contract. Vague delivery guarantees are how people build alerts
+on top of a logger that cannot support them.
+
+### 7.1 At-least-once, with a stated duplicate risk
+
+Retry policy, ported from the proven implementation:
+
+| Condition | Action |
+|---|---|
+| `204` (or any 2xx) | Done |
+| `5xx`, `408`, `429` | Retry, up to **3 attempts** total, backoff `200ms × attempt` |
+| Other `4xx` (`400`, `401`, `403`) | **Do not retry** — a bad token will not become good |
+| Network exception | Retry within the attempt budget |
+| Attempts exhausted | **Drop silently.** Never throw |
+
+Improvement over the .NET original: **honour `Retry-After`** on a `429` when present, capped,
+rather than using the fixed backoff.
+
+The endpoint has no idempotency or dedup, so a POST that is ingested but whose acknowledgement
+is lost **will be retried and will produce a duplicate**. That is the right trade — a rare
+duplicate beats losing lines on a transient blip — but say so explicitly, because anything
+downstream that *counts* events needs to know.
+
+**This is not a durable sink.** A hard crash loses whatever is in memory. If you need durability,
+you need a different architecture (sidecar, or stdout plus a cluster collector), and the README
+should say that plainly rather than letting people assume.
+
+### 7.2 Bounded queue, never block
+
+- `batchSize` 50, `flushIntervalMs` 2000, `queueLimit` 10000 — the .NET defaults, which have
+  production mileage.
+- **Emit the first event eagerly** rather than waiting out the interval, so a quiet service's
+  single error arrives in ~1 s instead of ~2 s. (This is the specific behaviour that fixes the
+  bug in §1.2; do not lose it to a naive timer.)
+- Overflow **drops**, and increments a counter exposed via `log.stats()`. It must never block an
+  application thread.
+- Cap in-flight requests (`maxConcurrency`, default 8) and reuse connections via a keep-alive
+  dispatcher, per §2.3.
+
+### 7.3 Flushing — the Next.js problem the .NET package never had
+
+This deserves its own treatment because it is the most likely source of "the logger works
+locally and loses everything in production".
+
+In a long-lived container, a 2-second background flush is fine. In a **serverless or
+freeze-after-response** environment, the runtime may suspend the process the instant the
+response is sent. A queued event with a pending 2-second timer is then **never delivered**, and
+nothing anywhere reports an error.
+
+Three mitigations, all of which the package should support:
+
+1. **`after()`** (stable in Next.js 15.1+, imported from `next/server`) — schedule the flush as
+   post-response work. This is the Next-native answer and should be what `withLogging` uses:
+
+   ```ts
+   import { after } from 'next/server';
+   after(() => log.flush(1500));
+   ```
+
+2. **`flushMode: 'sync'`** — await delivery before returning. Correct, costs latency; the right
+   default for `error`/`fatal` even when lower levels batch.
+3. **Lifecycle hooks in the Node entry point** — flush on `SIGTERM`/`SIGINT`/`beforeExit`, with a
+   bounded timeout, for containerised deploys (Kubernetes, which is the likely first consumer).
+
+Recommended default: **batch everything, but flush eagerly on `error` and above.** You lose a
+little efficiency on the lines that matter least and lose nothing on the lines that matter most.
+
+### 7.4 Self-observability
+
+A logger that fails silently is the problem being solved, so the package must be able to report
+on itself:
+
+```ts
+log.stats();
+// { queued: 3, sent: 1402, dropped: 0, failed: 2, retried: 5, lastError: '…' }
+```
+
+Plus an `onInternalError` callback (default: one `console.warn`, rate-limited) so a persistently
+broken token is visible somewhere without spamming stdout.
+
+---
+
+## 8. Repository and tooling
+
+### 8.1 Layout
+
+```
+rapid7-logger/
+├── src/
+│   ├── core/            logger.ts  formatter.ts  queue.ts  redact.ts  levels.ts  types.ts
+│   ├── transports/      rapid7-webhook.ts  console.ts  memory.ts
+│   ├── index.ts         Node entry  (lifecycle hooks, AsyncLocalStorage)
+│   ├── next.ts          Next entry  ('server-only', withLogging, onRequestError, after())
+│   └── edge.ts          Edge entry  (immediate-send)
+├── test/
+│   ├── unit/            fake fetch; formatter, redaction, retry, queue bounds
+│   ├── contract/        Transport invariants: never throws, flush is bounded
+│   └── live/            gated integration test (§9.2)
+├── examples/
+│   ├── node-basic/      plain Node script
+│   ├── nextjs-app/      instrumentation.ts + a Server Action + a Route Handler
+│   └── nextjs-edge/
+├── .github/workflows/   ci.yml  release.yml
+├── README.md  LICENSE  CONTRIBUTING.md  CODE_OF_CONDUCT.md  SECURITY.md  CHANGELOG.md
+└── package.json  tsconfig.json  tsup.config.ts  vitest.config.ts  eslint.config.js
+```
+
+### 8.2 Toolchain
+
+| Concern | Choice | Why |
+|---|---|---|
+| Language | TypeScript, `strict` | Types are a deliverable, not a by-product |
+| Build | **tsup** | Dual ESM+CJS plus `.d.ts` in one config; near-zero ceremony |
+| Test | **Vitest** | Native ESM, fast, good fake-timer support for the batching tests |
+| Lint/format | ESLint + Prettier | Conventional; keeps contributor friction low |
+| Versioning | **Changesets** | PR-authored changelog entries; works cleanly with OSS contributions |
+| CI | GitHub Actions | Matrix Node 20/22/24; typecheck, lint, unit+contract tests, build |
+
+### 8.3 Things CI must actually assert
+
+Beyond the usual, three project-specific gates:
+
+1. **No `node:*` import reaches `dist/edge.js`.** Assert it by grepping the bundle — a
+   regression here breaks Edge consumers at deploy time, not build time.
+2. **The public API surface is snapshotted.** An accidental type-level breaking change in a
+   logger is painful to discover downstream.
+3. **`send()` never rejects**, asserted against a transport whose `fetch` throws, returns `500`,
+   returns `401`, and times out. This is the headline guarantee; test it like one.
+
+---
+
+## 9. Verification
+
+Unit tests prove the formatter and the retry logic. They cannot prove the thing that actually
+matters — that a line posted from Node appears in Rapid7. That needs a live test.
+
+### 9.1 What to verify against the live endpoint
+
+| Claim | How |
+|---|---|
+| A lone event is delivered | Post one line with a fresh UUID; query for it |
+| Delivery latency | Measure post → queryable; expect ~1–2 s |
+| Multi-line is not shredded | Log an `Error` with a real stack; confirm **one** entry, intact |
+| Success code is `204` | Assert the status |
+| A bad token does not throw | Point at a garbage token; assert the app survives and `stats().failed` rises |
+| The correlation stamp is clickable | Manual, once — check in the Rapid7 UI (§2.5) |
+| Truncation marker appears | Post > `maxBytes`; confirm the marker |
+
+### 9.2 Gated live test
+
+```ts
+// test/live/webhook.live.test.ts
+const token = process.env.RAPID7_LIVE_TOKEN;
+describe.skipIf(!token)('live webhook', () => { /* … */ });
+```
+
+Rules: **skipped by default**, so a clone with no credentials has a green test run; never runs
+on pull requests from forks; credentials come from environment variables only — **no token or
+API key is ever committed, and none appears in this document**.
+
+Confirming arrival requires the Rapid7 **Query API**, which uses a *different* credential (a
+read API key) from the ingestion token. Keep that client in `test/live/` only — it is test
+infrastructure, not part of the shipped package (§3.3).
+
+---
+
+## 10. Publishing to npm
+
+### 10.1 The decision
+
+**Public repository in the Geekibo org; the package published to the public npm registry;
+releases cut only by a maintainer from a reviewed, protected `main`.**
+
+| | |
+|---|---|
+| **Source** | `github.com/geekibo/rapid7-logger` — public, readable and forkable by anyone |
+| **Registry** | **npmjs.org only.** `npm install @geekibo/rapid7-logger` with no account, no token, no `.npmrc` |
+| **Contribution** | Pull requests from anyone; **merge gated** by review + CI (§11) |
+| **Release** | Maintainer-controlled, versioned deliberately, published by CI from `main` (§10.4) |
+
+GitHub Packages is **dropped entirely**. It is not a mirror and not a fallback: it requires a
+classic PAT to install *even for public packages*, so any consumer who reached for it would hit
+auth friction that npmjs doesn't have. Publishing to both would mean documenting two install
+paths, one of which is strictly worse. One registry, no caveats.
+
+This separates the two things cleanly, which is exactly the model you want:
+
+- **Reading and contributing is open.** Anyone can clone, fork, open a PR, audit the transport.
+- **Shipping is closed.** Only a reviewed commit on `main` can become a version, and only a
+  maintainer decides when that happens.
+
+### 10.2 Publish with OIDC trusted publishing — no npm token at all
+
+This supersedes the `NPM_TOKEN` secret I had sketched earlier. Verified against npm's official
+documentation 2026-10-08:
+
+> npm **trusted publishing** authenticates a GitHub Actions workflow to npm over OIDC. **No
+> token is needed to publish**, and **provenance is generated automatically** for a public repo
+> publishing a public package.
+
+Why this matters more than convenience: a long-lived `NPM_TOKEN` in repository secrets is the
+single most valuable thing an attacker can steal from a package repo, and the thing most npm
+supply-chain compromises have turned on. Trusted publishing means **there is no such secret to
+steal**. For a brand-new scope asking strangers to trust it, that plus automatic provenance —
+a cryptographic link from the published tarball back to the exact commit and workflow that built
+it — is a large part of the answer to "why should I install this".
+
+**Requirements** (all from npm's docs, all satisfiable):
+
+| Requirement | Value |
+|---|---|
+| npm CLI | **>= 11.5.1** |
+| Node (in the release job) | **>= 22.14.0** |
+| Runner | **GitHub-hosted only** — self-hosted is not supported |
+| Workflow permission | `id-token: write` (plus `contents: read`) |
+| Provenance | **Automatic.** The `--provenance` flag is unnecessary |
+| Repo/package visibility | Public repo + public package — required for provenance |
+
+### 10.3 Configuring the trusted publisher
+
+On npmjs.com, under the package's **Settings → Trusted Publisher**, choose GitHub Actions and
+enter:
+
+| Field | Value |
+|---|---|
+| Organization or user | `geekibo` |
+| Repository | `rapid7-logger` |
+| Workflow filename | `release.yml` — **filename only**, must live in `.github/workflows/` |
+| Environment | `release` — optional, but take it (§11.3) |
+| Allowed actions | See the two-key option below |
+
+Five sharp edges, each of which has burned someone:
+
+1. **npm does not validate the configuration when you save it.** A typo surfaces only as a
+   failed publish. Expect the first release to be the real test.
+2. **`repository.url` in `package.json` must exactly match the GitHub repository.** Mismatch is
+   rejected at publish time.
+3. **A new configuration must complete a successful publish within 2 days or it expires.** Set
+   it up when you are ready to release, not weeks ahead.
+4. **Workflow *filename*, not path** — and renaming `release.yml` later silently breaks
+   publishing until you update npm's side.
+5. A package may have at most **10** trusted publishers.
+
+**The two-key release option.** `npm stage publish` is always permitted; `npm publish` and
+`npm dist-tag` are separately enablable. If you allow **only `npm stage publish`**, CI can
+*stage* a version but cannot release it — a human must then approve the staged version
+interactively (CLI or npmjs.com), which **requires 2FA**. CI alone can never publish.
+
+That is the strongest configuration, and it fits "review, then version" precisely. The cost is a
+manual approval per release. Recommendation: **start with `npm publish` allowed** while releases
+are frequent and the package is `0.x`, and move to stage-only at `1.0.0`, when releases get rarer
+and the consequence of a bad one gets larger.
+
+Separately, under **Settings → Publishing access**, enable **require 2FA and disallow tokens**.
+This does not affect trusted publishing (OIDC isn't a token) but it closes the side door — a
+stolen credential cannot publish, because no credential is authorised to.
+
+### 10.4 Release flow
+
+Releases are **Changesets-driven**, so the version bump is a reviewed artefact rather than a
+command someone runs from a laptop:
+
+```
+contributor PR  ──►  includes a changeset describing the change (patch/minor/major)
+       │
+       │  review + CI (§11)
+       ▼
+  merge to main  ──►  Changesets bot opens/updates a "Version Packages" PR
+       │                 (bumps version, writes CHANGELOG.md)
+       │
+       │  maintainer reviews and merges THAT PR  ◄── this is the release decision
+       ▼
+ release.yml  ──►  environment approval (§11.3)  ──►  npm publish via OIDC
+```
+
+Nothing publishes as a side effect of merging a feature. The release is its own reviewed,
+deliberate act — merging the Version Packages PR — and it is obvious in the history what was
+released and why.
+
+```yaml
+# .github/workflows/release.yml
+name: release
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    environment: release          # must match the trusted publisher's environment
+    permissions:
+      contents: write             # tag + GitHub release
+      id-token: write             # REQUIRED: mints the OIDC token
+      pull-requests: write        # Changesets' Version Packages PR
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22        # >= 22.14 for trusted publishing
+      - run: npm install -g npm@latest     # >= 11.5.1
+      - run: npm ci
+      - run: npm run typecheck && npm run lint && npm test && npm run build
+      - uses: changesets/action@v1
+        with:
+          publish: npm run release         # `changeset publish` — no NODE_AUTH_TOKEN
+```
+
+Note what is absent: **no `secrets.NPM_TOKEN`, and no `--provenance`.** Both are handled by
+OIDC. If you see a token being added back, something is misconfigured.
+
+### 10.5 Versioning
+
+Start at **`0.1.0`** and stay in `0.x` until the live verification in §9 has run against real
+traffic for a sustained period. `1.0.0` is a promise that the delivery contract in §7 is stable —
+don't make it on the strength of passing unit tests.
+
+The two surfaces most likely to force a breaking change are the **`Transport` interface** and the
+**`format` callback**. Design them last, mark them as the stability risk in the README, and
+consider shipping `1.0.0` with `Transport` documented as internal-but-exported so that
+refining it isn't a major bump.
+
+---
+
+## 11. Repository governance — open to read, gated to change
+
+The goal: anyone can contribute, nobody can land anything unreviewed, and a fork cannot reach
+your credentials. Everything below is a GitHub-native control.
+
+### 11.1 Ruleset on `main`
+
+Use a **repository ruleset** (the current mechanism; classic branch protection is legacy).
+Rules to enable, all confirmed available:
+
+| Rule | Setting | Why |
+|---|---|---|
+| **Require a pull request before merging** | on | No direct pushes to `main`, ever |
+| └ Required approvals | **see §11.2** | The one setting with a solo-maintainer trap |
+| └ Dismiss stale approvals | on | A re-push after approval must be re-reviewed |
+| └ Require review from Code Owners | on | Pairs with `CODEOWNERS` (§11.4) |
+| └ Require approval of most recent reviewable push | on | The last pusher can't be the approver |
+| └ Require conversation resolution | on | No merging over unanswered review comments |
+| **Require status checks to pass** | on, **strict** | Typecheck, lint, test, build must be green *and* the branch up to date |
+| **Block force pushes** | on (default) | History on `main` is append-only |
+| **Require linear history** | on | Squash merges; a clean, bisectable `main` |
+| **Require signed commits** | optional | Strong, but note an unsigned commit on a PR head can block a squash merge — it adds contributor friction, so consider deferring |
+| **Require deployments to succeed** | not needed | Release gating is handled by the environment (§11.3) |
+
+### 11.2 The solo-maintainer trap — decide this consciously
+
+**A PR author cannot approve their own pull request.** So if you set *required approvals* to 1
+while you are the only maintainer, you block **your own** merges — including the Version Packages
+PR that cuts every release.
+
+Three ways out, in the order I'd take them:
+
+1. **Required approvals = 0, everything else on.** You still get: no direct pushes, mandatory PR,
+   mandatory green CI, mandatory conversation resolution, no force pushes. A drive-by PR still
+   cannot merge itself, because only you can click merge. **This is the right starting point for
+   a one-maintainer repo** — it keeps every protection that actually stops bad code and drops the
+   one that only stops *you*.
+2. **Required approvals = 1, with yourself as a bypass actor.** Rulesets let you name bypass
+   actors (roles, teams, or GitHub Apps). Worth knowing: there is at least one community report
+   of admin bypass behaving differently once a ruleset moves from *evaluate* to *active* mode, so
+   if you take this route, **create the ruleset in evaluate mode first and confirm the bypass is
+   recorded before activating it.**
+3. **Required approvals = 1, no bypass** — the moment a second maintainer exists. This is the
+   end state; don't adopt it early and then route around it, because a bypass you use daily is
+   not a control.
+
+Raise it to option 3 as soon as there is someone to review. Until then, option 1 is honest
+protection rather than theatre.
+
+### 11.3 Gating the release job with a GitHub Environment
+
+Create an environment named **`release`** with **required reviewers** (you). Then:
+
+- `release.yml` declares `environment: release`, so the publish job **pauses for approval**
+  before it runs.
+- npm's trusted publisher is configured with that same environment name, so a workflow run that
+  is *not* in the `release` environment **cannot** mint a valid OIDC token — the registry itself
+  enforces it, not just your YAML.
+
+That is the second lock, and it's the one that makes "we review and then version the published
+package" mechanically true: an approved merge is not a release until a human releases it.
+
+### 11.4 Fork and Actions safety on a public repo
+
+Public repos have specific hazards. These are the ones that matter:
+
+- **Secrets are never exposed to `pull_request` runs from forks.** This is the default and it is
+  correct — keep it. It also means the live tests in §9.2 *will* skip on fork PRs, which is why
+  they are written to skip rather than fail.
+- **Never use `pull_request_target`** for CI on untrusted code. It runs with the base repo's
+  permissions and secrets against the fork's code — the classic public-repo compromise. If you
+  think you need it, you don't.
+- **Set default workflow permissions to read-only** at the repo level, and grant write scopes
+  per job (as `release.yml` does). A workflow with blanket `write` is a lateral-movement path.
+- **Require approval for all outside contributors' workflow runs**, so a first-time PR cannot
+  execute CI until you've glanced at it.
+- **Pin third-party actions**, ideally to a commit SHA. `actions/*` by major tag is a reasonable
+  compromise; anything else, pin hard.
+- **`npm ci`, never `npm install`, in CI**, so a PR cannot quietly float a dependency.
+- Note the residual risk honestly: trusted publishing does **not** protect against malicious code
+  inside the trusted workflow itself — a compromised dependency executing during `npm ci` in the
+  release job runs with the ability to publish. Zero runtime dependencies (§4.2) and a small,
+  reviewed devDependency set are the real mitigation.
+
+### 11.5 Ownership and contribution
+
+- **`CODEOWNERS`** — `* @<your-handle>`, with the ruleset requiring Code Owner review. Every PR
+  routes to you automatically.
+- **`CONTRIBUTING.md`** — state plainly: fork, branch, add a changeset, open a PR; unit tests run
+  with no credentials; live tests are expected to skip; maintainers cut releases.
+- **Issue and PR templates** — a bug template that asks for runtime (Node/Next/Edge), region, and
+  `log.stats()` output will save most of the back-and-forth.
+- **Enable Dependabot** (security + version updates) and **secret scanning with push protection** —
+  both free on public repos, and push protection is what stops an ingestion token being committed
+  in the first place, which given §1.3 is not hypothetical.
+
+---
+
+## 12. Open-source hygiene
+
+- **LICENSE** — MIT. Permissive, expected for infrastructure, no adoption friction.
+- **README** — the thing that determines whether anyone uses it. Lead with the problem (§1.1–1.2:
+  the stale alternatives and the silent-drop bug), then a five-line quick start, then the Next.js
+  section, then the delivery contract (§7). The endpoint findings in §2 are useful to anyone
+  integrating Rapid7 from *any* language — publishing them is a genuine contribution and will do
+  more for adoption than feature count.
+- **SECURITY.md** — a reporting route (enable private vulnerability reporting), plus an explicit
+  statement that the ingestion token is a **write credential** that must never reach a browser.
+- **CODE_OF_CONDUCT.md** — Contributor Covenant.
+- **Keywords** in `package.json`: `rapid7`, `insightops`, `logentries`, `logging`, `logger`,
+  `nextjs`, `serverless`, `structured-logging`. These are the searches that currently return
+  nothing maintained.
+- **Repo metadata** — description, topics, and a link to the npm package. Cheap, and it is how
+  people arrive.
+
+---
+
+## 13. Risks and open decisions
+
+| # | Risk | Mitigation |
+|---|---|---|
+| R1 | InsightOps "no longer sold" (§1.4) — the backend may be sunset | `Transport` seam (§4.3) keeps a future backend additive. Accept and proceed. |
+| R2 | Undocumented size/rate limits (§2.1) | Defensive truncation (§5.4), concurrency cap, `Retry-After` handling. Discover the real limits in §9 and document them. |
+| R3 | One request per event limits throughput | Measure in §9. If it binds, the honest answer is stdout + a cluster collector, not a cleverer client. |
+| R4 | Serverless freeze silently loses logs (§7.3) | `after()` by default in `withLogging`; eager flush on `error`+. Make the failure mode a documented, tested case. |
+| R5 | Duplicates from at-least-once retry (§7.1) | Documented in the contract. Flagged for anything that counts events. |
+| R6 | Token leaks to a browser bundle | Four layered defences (§6.5), including a build-time error. Plus secret scanning with push protection (§11.5). |
+| R7 | Maintenance burden of a public package | Tight scope (§3.3); zero runtime dependencies means little routine upkeep. |
+| R8 | **Trusted publisher misconfiguration** — not validated on save, expires if unused for 2 days (§10.3) | Configure it immediately before the first release, and treat that release as the test. |
+| R9 | **Renaming `release.yml` silently breaks publishing** | Note it in `CONTRIBUTING.md`; the filename is part of npm-side config. |
+| R10 | **Required approvals = 1 locks out a solo maintainer** (§11.2) | Start at 0 with every other rule on; raise when a second maintainer exists. |
+| R11 | Compromised devDependency in the release job can publish (§11.4) | Zero runtime deps, small reviewed devDeps, `npm ci`, pinned actions; stage-only publishing at `1.0.0`. |
+
+**Decisions still open:**
+
+1. **Exact org slug and repo name** — this document assumes `github.com/geekibo/rapid7-logger`
+   and the npm scope `@geekibo`. Confirm both, and **claim the `@geekibo` scope on npmjs early** —
+   scope squatting is real and the name is load-bearing in every example here.
+2. **Default `flushMode`** — recommend batch, with eager flush at `error` and above (§7.3).
+3. **Whether to ship `withLogging` in v1** or keep v1 to the primitive logger. It is the piece
+   most likely to need redesign after real use; shipping it in `0.x` is fine, in `1.0` less so.
+4. **Require signed commits?** (§11.1) Strong, but it adds real contributor friction and can
+   block squash merges. Defer unless you want it from day one.
+
+*Settled:* registry (npmjs only, §10.1), publish credential (OIDC trusted publishing, no token,
+§10.2), release mechanism (Changesets + environment approval, §10.4), package name
+(`@geekibo/rapid7-logger`, §3.1).
+
+---
+
+## 14. Suggested phasing
+
+| Phase | Deliverable | Done when |
+|---|---|---|
+| **0** | Spike: ~30 lines, post one line to the live endpoint from Node, confirm it appears | The endpoint behaves as §2 says — **verify before building on it** |
+| **1** | Core: types, levels, formatter, redaction, bounded queue, `MemoryTransport` | Unit tests green; no Node built-ins in core |
+| **2** | `Rapid7WebhookTransport`: fetch, retry, concurrency cap, keep-alive | Contract tests prove `send` never rejects; live test §9.2 passes |
+| **3** | Node entry: `createLogger`, `child`, `AsyncLocalStorage` trace, lifecycle flush | `examples/node-basic` works end to end |
+| **4** | Next entry: `onRequestError`, `withLogging`, `after()` flush, `server-only` | `examples/nextjs-app` works; a client import is a **build error** |
+| **5** | Edge entry: immediate-send | Bundle contains no `node:*`; runs on Edge |
+| **6** | **Repo hardening**: ruleset on `main`, `CODEOWNERS`, `release` environment, read-only default Actions permissions, Dependabot, secret scanning | A direct push to `main` is refused; a fork PR runs CI with no secrets |
+| **7** | Docs, CI, Changesets, npm scope claimed, trusted publisher configured, **`0.1.0` published** | `npm install @geekibo/rapid7-logger` works on a clean machine with **no auth**, and the npm page shows a **provenance** badge |
+| **8** | Real-world shakedown on one application; fold findings back into §2 and §7 | Logs arrive reliably over a week, **including from a quiet environment** (the §1.2 failure mode) |
+| **9** | `1.0.0`; consider moving to stage-only publishing (§10.3) | The §7 delivery contract has held under real traffic |
+
+Phase 0 exists because of the one lesson worth carrying into this: **measure the thing, don't
+reason about the configuration.** Every surprising fact in §2 — the newline rule, the clickable
+stamp, the lone-event drop — was found by posting to the endpoint and looking, and none of them
+could have been deduced from the documentation.
+
+Phase 6 deliberately precedes Phase 7. Harden the repository *before* the first publish, so the
+protections are in place the moment the package becomes something worth attacking.
+
+---
+
+## Appendix A — Sources
+
+**Verified against the live endpoint**
+
+Everything in §2 — the endpoint URL and regions, one-event-per-request, the first-line-only
+behaviour, the `204` response, the retry policy, the batching defaults and the clickable-stamp
+finding — comes from a production **.NET** implementation of this same transport, whose authors
+verified each behaviour by posting to the live endpoint and observing the result. Those
+verifications are dated **2026-07-16** and **2026-08-21**.
+
+None of it is deducible from the vendor documentation, which is precisely why it is written down
+here. Phase 0 (§14) re-verifies it from Node before anything is built on top.
+
+Publish dates in §1.1 were queried from the npm registry on 2026-10-08.
+
+**External documentation, fetched 2026-10-08**
+
+- [Rapid7 — InsightOps webhook](https://docs.rapid7.com/insightops/insightops-webhook/) — URL
+  format, `204` response, newline guidance, absence of documented limits, "no longer sold" notice.
+- [Rapid7 — JavaScript/HTML5](https://docs.rapid7.com/insightops/javascripthtml5) — region guidance.
+- [Next.js — `instrumentation.ts`](https://nextjs.org/docs/app/api-reference/file-conventions/instrumentation)
+  (16.4 copy) — `onRequestError` signature, `error: unknown`, `context` fields, digest caveat,
+  `NEXT_RUNTIME`.
+- [npm — Trusted publishers](https://docs.npmjs.com/trusted-publishers) — OIDC setup, no token
+  required, npm >= 11.5.1 / Node >= 22.14, GitHub-hosted runners only, automatic provenance,
+  `repository.url` matching, 2-day first-publish window, 10-publisher limit, `npm stage publish`
+  and the 2FA interaction.
+- [GitHub — Available rules for rulesets](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets)
+  — the §11.1 rule list, sub-options, strict status checks, bypass actors.
+- [GitHub — Working with the npm registry](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-npm-registry)
+  — authentication required even for public packages; classic PAT only. The basis for dropping
+  GitHub Packages in §10.1.
+- [GitHub Community — ruleset bypass in evaluate vs active mode](https://github.com/orgs/community/discussions/153705)
+  — the unresolved bypass-behaviour report referenced in §11.2.
