@@ -1,0 +1,18 @@
+version: 2
+updates:
+  # The package ships zero runtime dependencies, so this is devDependencies and
+  # the release toolchain — which is exactly the surface that can publish (§11.4).
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      dev-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly

@@ -1,0 +1,77 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # One job, so the required status check is the single stable context "ci".
+  # It is bootstrap-tolerant: until the toolchain lands (phase 1) there is nothing
+  # to run, and this must not block doc-only pull requests.
+  ci:
+    name: ci
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Detect toolchain
+        id: detect
+        run: |
+          if [ -f package.json ]; then
+            echo "toolchain=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "toolchain=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No package.json yet — the toolchain lands in phase 1. Nothing to check."
+          fi
+
+      - uses: actions/setup-node@v5
+        if: steps.detect.outputs.toolchain == 'true'
+        with:
+          node-version: 22
+          cache: npm
+
+      # npm ci, never npm install: a pull request must not be able to float a dependency.
+      - name: Install
+        if: steps.detect.outputs.toolchain == 'true'
+        run: npm ci
+
+      - name: Typecheck
+        if: steps.detect.outputs.toolchain == 'true'
+        run: npm run typecheck
+
+      - name: Lint
+        if: steps.detect.outputs.toolchain == 'true'
+        run: npm run lint
+
+      # Live tests skip themselves without RAPID7_LIVE_TOKEN, which is never available
+      # to a pull request from a fork. They must skip, never fail.
+      - name: Test
+        if: steps.detect.outputs.toolchain == 'true'
+        run: npm test
+
+      - name: Build
+        if: steps.detect.outputs.toolchain == 'true'
+        run: npm run build
+
+      # Invariant 8 (CLAUDE.md): the edge bundle must run where node builtins do not
+      # exist. A regression here breaks consumers at deploy time, not build time.
+      - name: Edge bundle must not import node builtins
+        if: steps.detect.outputs.toolchain == 'true'
+        run: |
+          if [ ! -f dist/edge.js ]; then
+            echo "dist/edge.js missing — skipping (edge entry lands in phase 5)"
+            exit 0
+          fi
+          if grep -nE "(require\(|from[[:space:]]*)['\"]node:" dist/edge.js; then
+            echo "::error::dist/edge.js imports a node: builtin — see CLAUDE.md invariant 8"
+            exit 1
+          fi
+          echo "clean"

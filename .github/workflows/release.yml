@@ -1,0 +1,74 @@
+# Publishes to npm via OIDC trusted publishing. There is deliberately NO NPM_TOKEN
+# in this repository — nothing here is worth stealing.
+#
+# IMPORTANT: npm's trusted-publisher configuration keys on this file's NAME.
+# Renaming this file breaks publishing until npm's side is updated to match.
+# See docs/DESIGN.md §10.3.
+name: release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: release
+    runs-on: ubuntu-latest
+    # Required reviewer gate. npm's trusted publisher is bound to this same
+    # environment name, so a run outside it cannot mint a valid OIDC token —
+    # the registry enforces it, not just this file.
+    environment: release
+    permissions:
+      contents: write        # tag + GitHub release
+      id-token: write        # REQUIRED: mints the OIDC token for npm
+      pull-requests: write   # Changesets' "Version Packages" PR
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Detect toolchain
+        id: detect
+        run: |
+          if [ -f package.json ]; then
+            echo "toolchain=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "toolchain=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No package.json yet — nothing to release."
+          fi
+
+      - uses: actions/setup-node@v5
+        if: steps.detect.outputs.toolchain == 'true'
+        with:
+          node-version: 22          # >= 22.14 required for trusted publishing
+          cache: npm
+
+      # Trusted publishing requires npm CLI >= 11.5.1.
+      - name: Update npm
+        if: steps.detect.outputs.toolchain == 'true'
+        run: npm install -g npm@latest
+
+      - name: Install
+        if: steps.detect.outputs.toolchain == 'true'
+        run: npm ci
+
+      - name: Verify
+        if: steps.detect.outputs.toolchain == 'true'
+        run: npm run typecheck && npm run lint && npm test && npm run build
+
+      # Opens/updates the "Version Packages" PR; publishes when that PR is merged.
+      # No NODE_AUTH_TOKEN: authentication is OIDC, and provenance is automatic.
+      - uses: changesets/action@v1
+        if: steps.detect.outputs.toolchain == 'true'
+        with:
+          publish: npm run release
+          version: npm run version
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

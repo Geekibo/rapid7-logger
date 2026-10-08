@@ -1,0 +1,6 @@
+# Every change routes to the maintainer for review.
+# Code-owner review is not yet *required* by the ruleset on main: with a single
+# maintainer it cannot be satisfied, because an author cannot approve their own
+# pull request. Enable "require review from Code Owners" once a second
+# maintainer exists. See docs/DESIGN.md §11.2.
+* @cbikhazi
