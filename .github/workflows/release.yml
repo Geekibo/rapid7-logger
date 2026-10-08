@@ -30,7 +30,7 @@ jobs:
       id-token: write        # REQUIRED: mints the OIDC token for npm
       pull-requests: write   # Changesets' "Version Packages" PR
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -65,10 +65,10 @@ jobs:
 
       # Opens/updates the "Version Packages" PR; publishes when that PR is merged.
       # No NODE_AUTH_TOKEN: authentication is OIDC, and provenance is automatic.
-      - uses: changesets/action@v1
+      # v2 renamed these inputs (publish -> publish-script, version -> version-script)
+      # and github-token is now an input defaulting to github.token, not an env var.
+      - uses: changesets/action@v2
         if: steps.detect.outputs.toolchain == 'true'
         with:
-          publish: npm run release
-          version: npm run version
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          publish-script: npm run release
+          version-script: npm run version

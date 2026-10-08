@@ -12,7 +12,13 @@ updates:
         patterns: ["*"]
         update-types: ["minor", "patch"]
 
+  # Grouped into a single pull request, monthly. Security updates arrive
+  # separately via Dependabot security updates and are not held to this schedule.
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
-      interval: weekly
+      interval: monthly
+    open-pull-requests-limit: 3
+    groups:
+      actions:
+        patterns: ["*"]
