@@ -65,7 +65,7 @@ jobs:
 
       # Opens/updates the "Version Packages" PR; publishes when that PR is merged.
       # No NODE_AUTH_TOKEN: authentication is OIDC, and provenance is automatic.
-      - uses: changesets/action@v1
+      - uses: changesets/action@v2
         if: steps.detect.outputs.toolchain == 'true'
         with:
           publish: npm run release
