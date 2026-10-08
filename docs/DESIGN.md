@@ -1,12 +1,13 @@
 # Design: a Rapid7 InsightOps logger for Node and Next.js
 
-**Status:** design — implementation not started · **Last updated:** 2026-10-08
+**Status:** design — endpoint re-verified from Node (phase 0); implementation not started ·
+**Last updated:** 2026-10-08
 
 This is the design document and rationale for `@geekibo/rapid7-logger`. It is the **source of
 truth** for the package's architecture, its delivery contract, and the endpoint findings the
 implementation depends on. Issues in this repository reference its section numbers.
 
-Read §2 before writing any transport code: the endpoint has three non-obvious behaviours that
+Read §2 before writing any transport code: the endpoint has several non-obvious behaviours that
 dictate the design, and none of them are in the vendor documentation.
 
 ---
@@ -45,7 +46,8 @@ inverts your intuition — logging looks fine under load and fails exactly when 
 emits the one error you needed to see.
 
 The fix is to abandon TCP and use the **HTTP webhook**, one event per request. A lone event is
-then ingested in ~1 s.
+then ingested in under a second — re-measured from Node on 2026-10-08: five of five lone events
+delivered to a quiet log, each stamped by Rapid7 ~0.5 s after it was sent.
 
 ### 1.3 Prior art worth copying, and prior art worth avoiding
 
@@ -94,8 +96,11 @@ on day one — that is speculative generality. Just don't weld the core to the w
 ## 2. What the endpoint actually does
 
 Everything in this section is **verified**, either against the live endpoint during the .NET
-work (dated below) or against Rapid7's current documentation fetched 2026-10-08. Treat anything
-not listed here as unknown rather than assuming it behaves sensibly.
+work (dated below) or against Rapid7's current documentation fetched 2026-10-08. All of it was
+then **re-measured from Node** (v20.20.0, undici 6.23.0) against the live EU endpoint on
+2026-10-08 by `spike/webhook-contract.mjs` (#4); re-run that script rather than reasoning when a
+fact here is in doubt. Treat anything not listed here as unknown rather than assuming it behaves
+sensibly.
 
 ### 2.1 The wire protocol
 
@@ -110,10 +115,11 @@ Content-Type: text/plain
 |---|---|---|
 | Regions | `eu`, `us`, `au`, `ca`, `jp` — the region is the subdomain | .NET impl; Rapid7 docs confirm `us`/`eu` |
 | Token | The per-log ingestion token (GUID), in the **path** | Rapid7 docs |
-| Success status | **`204 No Content`** | Rapid7 docs (sample response) |
-| Lone-event latency | ~1 s ingestion, ~2 s end-to-end delivery | Verified live 2026-07-16 |
-| Body size limit | **Not documented.** Assume nothing; truncate defensively (§5.4) | Rapid7 docs state no limit |
-| Rate limit | **Not documented.** No `Retry-After` behaviour specified | Rapid7 docs state no limit |
+| Success status | **`204 No Content`**, empty body | Rapid7 docs; measured from Node 2026-10-08 |
+| Lone-event latency | ~1 s ingestion, ~2 s end-to-end delivery. From Node: stamped by Rapid7 **~0.5 s** after sending (5/5 delivered); **searchable via the Query API after ~10 s** (median 9.7 s, max 10.9 s) | Verified live 2026-07-16 (.NET); measured from Node 2026-10-08 |
+| Wrong token | **`204`, silently discarded** — a well-formed but unknown GUID, or a valid token in the wrong region. A malformed token gets `404` (§2.6) | Measured from Node 2026-10-08 |
+| Body size limit | **32,767 bytes per entry**, excluding the trailing `\n`. Longer bodies still get `204` and are **split into consecutive entries** of at most 32,767 bytes; `413` from 65,536 bytes. Counted in UTF-8 bytes (§5.4) | Measured from Node 2026-10-08; Rapid7 docs state no limit |
+| Rate limit | **None observed** up to ~164 req/s (32 concurrent for 10 s, 2,969 of 2,969 stored). No `429` and no rate-limit headers seen, so `Retry-After` behaviour is still unobserved | Measured from Node 2026-10-08; Rapid7 docs state no limit |
 | Idempotency / dedup | **None.** Retries can duplicate (§7.1) | .NET impl design note |
 
 ### 2.2 The newline rule — the single most important constraint
@@ -121,21 +127,33 @@ Content-Type: text/plain
 `/v1/noformat` **does not accept a newline-delimited batch.** You cannot post ten lines in one
 request and get ten entries.
 
-Two sources, which disagree on the detail but agree on the consequence:
+The endpoint **keeps only the first line** of a multi-line body and discards the rest. The .NET
+implementation found this against the live EU endpoint (2026-07-16), and it was re-measured from
+Node on 2026-10-08:
 
-- The .NET implementation verified against the live EU endpoint (2026-07-16) that the endpoint
-  **keeps only the first line** of a multi-line body — the rest is discarded.
-- Rapid7's own JavaScript example strips line feeds with the comment *"strip line feeds or
-  they'll appear as individual entries."*
+| Body | Stored |
+|---|---|
+| `A first\nB second\n` | One entry, `A first` — the rest discarded |
+| `A first\r\nB second\r\n` | One entry, `A first` — the `\r` is dropped too |
+| `A first\rB second\n` | One entry, **both lines kept**, with the raw `\r` inside it |
+| `A only line` (no trailing `\n`) | Stored identically — the trailing `\n` in §2.1 is optional |
 
-Either way the rule for an implementer is identical and non-negotiable:
+Rapid7's own JavaScript example strips line feeds with the comment *"strip line feeds or
+they'll appear as individual entries."* That does not match current behaviour: nothing split
+into separate entries. The consequence is the same either way, and the rule for an implementer
+is identical and non-negotiable:
 
 > **One event per HTTP request, and the body must contain no interior newlines.**
 
 So a multi-line message or a stack trace must be **flattened** (interior `\r\n` and `\n`
 collapsed to spaces) before posting, or it will be either truncated or shredded into unrelated
 entries. This is an endpoint requirement, not a formatting preference — it must not be
-configurable.
+configurable. Measured from Node: a real nested stack trace flattened this way was stored as
+exactly one entry, byte-identical to what was sent.
+
+A lone `\r` is not a correctness problem: it neither truncates nor splits, so the rule covers
+`\r\n` and `\n`. Whether to also replace a stray `\r` for readability is a formatter decision
+(#7), not an endpoint requirement.
 
 ### 2.3 Consequences for throughput
 
@@ -176,6 +194,30 @@ The working form is the ID, a colon, then a literal underscore:
   supplies the value — so a message that carries its own `Label: value` pairs chains onto the
   stamp and the line loses its click entirely.
 - **Emit the ID in full.** Let consumers shorten it; a library must not choose a truncation.
+
+Re-checked from Node on 2026-10-08 through the Query API instead of the UI: a line posted in this
+form matches the key/value search `where(<id>=_)`, and does not match `where(<id>=nope)`. So
+Rapid7 parses the ID as the key, which is the property this section depends on.
+
+### 2.6 A wrong token is not an error
+
+The endpoint does not reject a token in any way a client can see. Measured from Node on
+2026-10-08:
+
+| Token | Response | Stored anywhere visible? |
+|---|---|---|
+| A well-formed GUID that is not a token | **`204`** | No |
+| The valid token, posted to the wrong region | **`204`** | No |
+| A malformed string (not a GUID) | `404`, empty body | — |
+
+So a mistyped, revoked or wrong-region token **looks exactly like success**. Nothing in the
+response tells them apart, the retry policy (§7.1) files them under "done", and
+`stats().failed` (§7.4) will not rise. Only a malformed token is detectable from the response.
+
+The one reliable test is to look for the events, which is why the live test (§9.2) reads back
+through the Query API rather than trusting the `204`. How, or whether, the package should help a
+consumer catch a misconfigured token is settled in §13: validate the config shape at
+construction, and document the rest.
 
 ---
 
@@ -385,11 +427,36 @@ not style.
 ### 5.4 Defensive truncation
 
 Rapid7 documents no body-size limit, which means there is one and you will find it at 3 a.m.
-Default to a `maxBytes` of 32 KiB per entry, truncating with a visible marker:
+It was found on 2026-10-08 by bisection from Node (§2.1):
+
+| Body (excluding the trailing `\n`) | Response | Stored |
+|---|---|---|
+| ≤ 32,767 bytes | `204` | One entry, intact |
+| 32,768 – 65,535 bytes | `204` | **Split into consecutive entries**: the first 32,767 bytes, then the remainder, with identical timestamps. No marker, no error |
+| ≥ 65,536 bytes | `413` | Nothing |
+
+No bytes are lost — a 49,152-byte body came back as entries of 32,767 and 16,385 bytes — but the
+line is **shredded into separate entries**, the same failure §2.2 describes for newlines. A
+32,768-byte body became a full entry plus an entry holding just its last byte. A search for
+anything spanning the split point, such as a correlation ID, misses it.
+
+The limit counts **UTF-8 bytes, not characters**: an 11,326-character body of 33,792 bytes was
+split. The split ignores character boundaries, so a multi-byte character straddling it is
+replaced by `U+FFFD` (`�`) in **both** entries.
+
+So the endpoint already "handles" oversized lines, badly. The client must truncate first, with a
+visible marker, so the whole posted line, marker included, fits in **32,767 bytes**, cut on a
+code-point boundary:
 
 ```
 … [truncated 148231 of 180503 bytes]
 ```
+
+`maxBytes` therefore defaults to **32,767**, not the 32 KiB (32,768) this section originally
+guessed. That guess was one byte over the cap, so every maximum-length truncated line would have
+had its last byte, the end of the marker, split off into an entry of its own. A value above
+32,767 buys nothing, because the endpoint splits there regardless. The formatter (#7)
+implements this.
 
 A truncated line that says so is diagnosable. A silently cut line sends you looking for a bug
 that is in your logger.
@@ -551,12 +618,18 @@ Retry policy, ported from the proven implementation:
 |---|---|
 | `204` (or any 2xx) | Done |
 | `5xx`, `408`, `429` | Retry, up to **3 attempts** total, backoff `200ms × attempt` |
-| Other `4xx` (`400`, `401`, `403`) | **Do not retry** — a bad token will not become good |
+| Other `4xx` (measured: a malformed token → `404`; oversized → `413`) | **Do not retry** — a bad token will not become good |
 | Network exception | Retry within the attempt budget |
 | Attempts exhausted | **Drop silently.** Never throw |
 
+**This table cannot catch most bad tokens.** A well-formed but wrong token, or the right token in
+the wrong region, gets `204` (§2.6) and lands in the "done" row. The non-retryable `4xx` row
+fires only for a malformed token, or for `413`, which cannot occur when §5.4's truncation runs
+first.
+
 Improvement over the .NET original: **honour `Retry-After`** on a `429` when present, capped,
-rather than using the fixed backoff.
+rather than using the fixed backoff. This path is defensive: no `429` has been observed from the
+endpoint (§2.1, none up to ~164 req/s), so it is untested against the real thing.
 
 The endpoint has no idempotency or dedup, so a POST that is ingested but whose acknowledgement
 is lost **will be retried and will produce a duplicate**. That is the right trade — a rare
@@ -618,7 +691,9 @@ log.stats();
 ```
 
 Plus an `onInternalError` callback (default: one `console.warn`, rate-limited) so a persistently
-broken token is visible somewhere without spamming stdout.
+broken token is visible somewhere without spamming stdout. Note the limit: only a *malformed*
+token produces a failure the logger can see. A wrong but well-formed token, or the wrong region,
+succeeds silently (§2.6).
 
 ---
 
@@ -681,10 +756,10 @@ matters — that a line posted from Node appears in Rapid7. That needs a live te
 | Claim | How |
 |---|---|
 | A lone event is delivered | Post one line with a fresh UUID; query for it |
-| Delivery latency | Measure post → queryable; expect ~1–2 s |
+| Delivery latency | Measure post → queryable. Expect the Rapid7 stamp ~0.5 s after sending, but **searchable via the Query API only after ~10 s**, so poll for ≥ 30 s |
 | Multi-line is not shredded | Log an `Error` with a real stack; confirm **one** entry, intact |
 | Success code is `204` | Assert the status |
-| A bad token does not throw | Point at a garbage token; assert the app survives and `stats().failed` rises |
+| A bad token does not throw | Point at a **malformed** token (→ `404`); assert the app survives and `stats().failed` rises. A well-formed wrong token returns `204` (§2.6), so it cannot be asserted this way |
 | The correlation stamp is clickable | Manual, once — check in the Rapid7 UI (§2.5) |
 | Truncation marker appears | Post > `maxBytes`; confirm the marker |
 
@@ -988,7 +1063,7 @@ Public repos have specific hazards. These are the ones that matter:
 | # | Risk | Mitigation |
 |---|---|---|
 | R1 | InsightOps "no longer sold" (§1.4) — the backend may be sunset | `Transport` seam (§4.3) keeps a future backend additive. Accept and proceed. |
-| R2 | Undocumented size/rate limits (§2.1) | Defensive truncation (§5.4), concurrency cap, `Retry-After` handling. Discover the real limits in §9 and document them. |
+| R2 | Undocumented size/rate limits (§2.1) | Measured 2026-10-08: a 32,767-byte per-entry cap, with longer bodies silently split into several entries, and `413` from 65,536; no rate limit seen up to ~164 req/s. Client-side truncation under the cap (§5.4), concurrency cap, `Retry-After` handling kept as a defence. Re-check under real traffic (§14 phase 8). |
 | R3 | One request per event limits throughput | Measure in §9. If it binds, the honest answer is stdout + a cluster collector, not a cleverer client. |
 | R4 | Serverless freeze silently loses logs (§7.3) | `after()` by default in `withLogging`; eager flush on `error`+. Make the failure mode a documented, tested case. |
 | R5 | Duplicates from at-least-once retry (§7.1) | Documented in the contract. Flagged for anything that counts events. |
@@ -998,6 +1073,7 @@ Public repos have specific hazards. These are the ones that matter:
 | R9 | **Renaming `release.yml` silently breaks publishing** | Note it in `CONTRIBUTING.md`; the filename is part of npm-side config. |
 | R10 | **Required approvals = 1 locks out a solo maintainer** (§11.2) | Start at 0 with every other rule on; raise when a second maintainer exists. |
 | R11 | Compromised devDependency in the release job can publish (§11.4) | Zero runtime deps, small reviewed devDeps, `npm ci`, pinned actions; stage-only publishing at `1.0.0`. |
+| R12 | **A wrong token or region fails silently** — the endpoint answers `204` (§2.6) | Documented in the contract. Only a malformed token surfaces as an error; confirming delivery needs a Query API read-back. Config shape validated at construction (§13, settled). |
 
 **Decisions still open:**
 
@@ -1012,7 +1088,18 @@ Public repos have specific hazards. These are the ones that matter:
 
 *Settled:* registry (npmjs only, §10.1), publish credential (OIDC trusted publishing, no token,
 §10.2), release mechanism (Changesets + environment approval, §10.4), package name
-(`@geekibo/rapid7-logger`, §3.1).
+(`@geekibo/rapid7-logger`, §3.1), and catching a misconfigured token (§2.6, settled 2026-10-08):
+
+- **Validate the config shape at construction.** The token must be a GUID and the region one of
+  `eu`, `us`, `au`, `ca`, `jp`. A value that fails is treated like an absent token: the logger
+  falls back to console-only and reports it once through `onInternalError`. It never throws.
+  This catches malformed tokens and mistyped regions at startup rather than as runtime `404`s.
+- **Document what it cannot catch.** The README contract states that a `204` means *accepted*,
+  not *delivered*: a well-formed wrong token or the wrong region succeeds silently, so consumers
+  should search for their first events after deploying. A periodic heartbeat with a Rapid7
+  "absence" alert is suggested as optional consumer-side guidance.
+- **Rejected:** a startup read-back through the Query API. It needs a second credential, adds
+  ~10 s, and puts a Query API client in the shipped package, which §3.3 rules out.
 
 ---
 
@@ -1052,7 +1139,9 @@ verified each behaviour by posting to the live endpoint and observing the result
 verifications are dated **2026-07-16** and **2026-08-21**.
 
 None of it is deducible from the vendor documentation, which is precisely why it is written down
-here. Phase 0 (§14) re-verifies it from Node before anything is built on top.
+here. Phase 0 (§14, #4) re-verified it from Node (v20.20.0, undici 6.23.0) against the live EU
+endpoint on **2026-10-08**, using `spike/webhook-contract.mjs`. The wrong-token, size-limit,
+rate and Query API latency findings in §2 and §5.4 come from that run.
 
 Publish dates in §1.1 were queried from the npm registry on 2026-10-08.
 
