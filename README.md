@@ -86,6 +86,7 @@ cannot support it.
 | **Never throws** | `send()` never throws and never rejects. A logging failure must never fail a user's request. |
 | **Bounded** | Queue of 10,000; overflow **drops** and increments a counter. It will never block your application. |
 | **Bounded flush** | `flush(timeoutMs)` returns when the timeout elapses, drained or not. No hung shutdowns. |
+| **`204` ≠ delivered** | A malformed token or unknown region is caught at startup and falls back to console-only. But the endpoint answers `204` even to a well-formed *wrong* token or the wrong region, and discards the events. Search for your first events after deploying. |
 | **Not durable** | A hard crash loses whatever is buffered in memory. If you need durability you need a different architecture — stdout plus a cluster collector — and this README would rather say so than let you assume. |
 | **Server-only** | No browser entry point. The ingestion token is a **write credential**; importing this from a Client Component is a build error. |
 
@@ -112,7 +113,14 @@ integrate from, and none of them appear in the vendor docs:
   the body must contain no interior newlines, or your stack traces get truncated or shredded into
   unrelated entries.
 - **A lone POST is ingested in ~1s** — which is what fixes the TCP drop bug above.
-- **`204 No Content`** on success. No documented size or rate limits, so truncate defensively.
+- **`204 No Content`** on success — and also for a **wrong token or the wrong region**. A
+  well-formed but invalid token is accepted and silently discarded, so a `204` does not prove
+  delivery. ([§2.6](docs/DESIGN.md#26-a-wrong-token-is-not-an-error))
+- **Entries are capped at 32,767 bytes.** Up to 64 KiB the endpoint still answers `204` but
+  silently splits the line into several separate entries, breaking any multi-byte character at
+  the split; beyond that it answers `413`. None of this is documented, so truncate client-side,
+  with a marker, before posting.
+  ([§5.4](docs/DESIGN.md#54-defensive-truncation))
 - Rapid7's viewer only renders a correlation ID as **clickable** when it parses as the *key* of a
   key/value pair — so the stamp has to be `<id>: _ `, with a literal underscore as the value.
   Every character is load-bearing; [§2.5](docs/DESIGN.md#25-the-clickable-correlation-trick)

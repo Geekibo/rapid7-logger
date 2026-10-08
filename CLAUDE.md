@@ -1,4 +1,8 @@
-# CLAUDE.md — @geekibo/rapid7-logger
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+# @geekibo/rapid7-logger
 
 ## Read this first
 
@@ -72,6 +76,33 @@ equally, do not ship a second transport speculatively.
   the release, so a PR without one is incomplete.
 - **`npm ci`, never `npm install`, in CI**, so a PR cannot quietly float a dependency.
 - Match the surrounding code's naming, comment density and idiom.
+
+### Current state and commands
+
+The repo is **pre-phase-1**: only the design, README and workflows exist — no `package.json`,
+no `src/`. Work proceeds phase by phase (§14); phase 0 (a live spike confirming §2) gates the
+rest. The target layout is §8.1 and the `exports` map is §4.2 — follow them rather than
+inventing a structure.
+
+`spike/webhook-contract.mjs` is the phase 0 measurement script (#4). When a §2 fact is in doubt,
+re-run its probe (`node --env-file=.env spike/webhook-contract.mjs <probe>`) rather than
+reasoning about it. It is not shipped and nothing in `src/` may import it.
+
+CI (`.github/workflows/ci.yml`) is bootstrap-tolerant: it skips everything until `package.json`
+exists, then runs these scripts by name, so the toolchain PR must define all of them:
+
+```sh
+npm run typecheck   # tsc, no emit
+npm run lint
+npm test            # vitest run — live tests skip without RAPID7_LIVE_TOKEN
+npm run build       # tsup → dist/{index,next,edge}.{js,cjs,d.ts}  (edge is ESM-only)
+npm run version     # changesets version   — called by release.yml
+npm run release     # changesets publish   — called by release.yml
+```
+
+Single test: `npx vitest run test/unit/formatter.test.ts -t "flattens newlines"`.
+After `build`, CI greps `dist/edge.js` for any `node:` import and fails on a match (invariant 8).
+CI runs on Node 22; the package's `engines` floor is Node 20.9.
 
 ### Testing
 
