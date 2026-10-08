@@ -1,6 +1,6 @@
 # Design: a Rapid7 InsightOps logger for Node and Next.js
 
-**Status:** design — endpoint re-verified from Node (phase 0); implementation not started ·
+**Status:** phase 1 in progress — toolchain scaffolded (#5); endpoint re-verified from Node (phase 0) ·
 **Last updated:** 2026-10-08
 
 This is the design document and rationale for `@geekibo/rapid7-logger`. It is the **source of
@@ -292,20 +292,28 @@ imports — so the same core runs in Node, Edge and Workers. Anything Node-speci
 ```json
 {
   "name": "@geekibo/rapid7-logger",
-  "version": "0.1.0",
+  "version": "0.0.0",
   "description": "Reliable Rapid7 InsightOps logging for Node.js and Next.js",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/geekibo/rapid7-logger.git"
+    "url": "git+https://github.com/Geekibo/rapid7-logger.git"
   },
   "type": "module",
   "sideEffects": false,
   "engines": { "node": ">=20.9.0" },
   "exports": {
-    ".":      { "types": "./dist/index.d.ts",  "import": "./dist/index.js",  "require": "./dist/index.cjs" },
-    "./next": { "types": "./dist/next.d.ts",   "import": "./dist/next.js",   "require": "./dist/next.cjs" },
-    "./edge": { "types": "./dist/edge.d.ts",   "import": "./dist/edge.js" }
+    ".": {
+      "import":  { "types": "./dist/index.d.ts",  "default": "./dist/index.js" },
+      "require": { "types": "./dist/index.d.cts", "default": "./dist/index.cjs" }
+    },
+    "./next": {
+      "import":  { "types": "./dist/next.d.ts",  "default": "./dist/next.js" },
+      "require": { "types": "./dist/next.d.cts", "default": "./dist/next.cjs" }
+    },
+    "./edge": {
+      "import":  { "types": "./dist/edge.d.ts", "default": "./dist/edge.js" }
+    }
   },
   "files": ["dist", "README.md", "LICENSE"],
   "dependencies": {},
@@ -323,6 +331,15 @@ Notes:
   features — same principle.
 - **`next` is an optional peer**, so plain Node consumers never pull it in.
 - **No `/edge` CJS build** — the Edge runtime is ESM-only.
+- **Types are declared per condition.** In a `type: module` package a `.d.ts` is read as ESM
+  types, so a single `types` entry would give CJS consumers (`moduleResolution: node16`) the
+  "masquerading as ESM" error. The `require` branch points at `.d.cts`; `@arethetypeswrong/cli`
+  passes for both.
+- **`version` starts at `0.0.0`.** Changesets publishes the current version when no changesets
+  are pending, so starting at `0.1.0` could publish it without the reviewed "Version Packages"
+  PR (§10.4). The first `minor` changeset produces `0.1.0` (§10.5).
+- **npm omits an empty `dependencies` object** on install, so the field is absent from the real
+  file. `test/unit/package.test.ts` asserts there are no runtime dependencies either way.
 - `engines.node >= 20.9` matches Next.js 16's floor and guarantees global `fetch`. Note the
   **release workflow** needs Node >= 22.14 for trusted publishing (§10.2) — that is a CI
   requirement, not a consumer one.
@@ -713,13 +730,14 @@ rapid7-logger/
 │   ├── unit/            fake fetch; formatter, redaction, retry, queue bounds
 │   ├── contract/        Transport invariants: never throws, flush is bounded
 │   └── live/            gated integration test (§9.2)
+├── spike/               phase 0 endpoint measurement script (#4) — not shipped
 ├── examples/
 │   ├── node-basic/      plain Node script
 │   ├── nextjs-app/      instrumentation.ts + a Server Action + a Route Handler
 │   └── nextjs-edge/
 ├── .github/workflows/   ci.yml  release.yml
 ├── README.md  LICENSE  CONTRIBUTING.md  CODE_OF_CONDUCT.md  SECURITY.md  CHANGELOG.md
-└── package.json  tsconfig.json  tsup.config.ts  vitest.config.ts  eslint.config.js
+└── package.json  tsconfig.json  tsup.config.ts  vitest.config.ts  eslint.config.js  .prettierrc.json
 ```
 
 ### 8.2 Toolchain
@@ -731,14 +749,20 @@ rapid7-logger/
 | Test | **Vitest** | Native ESM, fast, good fake-timer support for the batching tests |
 | Lint/format | ESLint + Prettier | Conventional; keeps contributor friction low |
 | Versioning | **Changesets** | PR-authored changelog entries; works cleanly with OSS contributions |
-| CI | GitHub Actions | Matrix Node 20/22/24; typecheck, lint, unit+contract tests, build |
+| CI | GitHub Actions | One job, `ci` (the required status check), on Node 22: typecheck, lint + Prettier, tests, build, edge-bundle check. `engines` declares a Node 20.9 floor that CI does not exercise; a matrix would rename the required check |
 
 ### 8.3 Things CI must actually assert
 
 Beyond the usual, three project-specific gates:
 
 1. **No `node:*` import reaches `dist/edge.js`.** Assert it by grepping the bundle — a
-   regression here breaks Edge consumers at deploy time, not build time.
+   regression here breaks Edge consumers at deploy time, not build time. The grep alone is not
+   enough: measured while scaffolding (#5), tsup by default rewrites `node:fs` to a bare `fs`,
+   which a `node:`-only grep misses. So it is enforced in three layers: an ESLint
+   `no-restricted-imports` ban on every built-in (bare and `node:`) in `src/core`,
+   `src/transports` and `src/edge.ts`; an esbuild plugin in `tsup.config.ts` that fails the
+   Edge build on any built-in (with `removeNodeProtocol: false`, so the prefix survives to be
+   seen); and the CI grep as a last check.
 2. **The public API surface is snapshotted.** An accidental type-level breaking change in a
    logger is painful to discover downstream.
 3. **`send()` never rejects**, asserted against a transport whose `fetch` throws, returns `500`,
@@ -930,7 +954,8 @@ OIDC. If you see a token being added back, something is misconfigured.
 
 ### 10.5 Versioning
 
-Start at **`0.1.0`** and stay in `0.x` until the live verification in §9 has run against real
+Publish **`0.1.0`** first — the package starts at `0.0.0` and the first `minor` changeset
+produces `0.1.0` through the reviewed release PR (§4.2, §10.4) — and stay in `0.x` until the live verification in §9 has run against real
 traffic for a sustained period. `1.0.0` is a promise that the delivery contract in §7 is stable —
 don't make it on the strength of passing unit tests.
 

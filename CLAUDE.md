@@ -51,8 +51,10 @@ These are correctness, not style. A change that breaks one of these is wrong eve
    The Next entry point must `import 'server-only'` so a Client Component import is a *build*
    error (§6.5).
 8. **The core imports no `node:*` modules.** It must run on Edge and in Workers. Node-specific
-   code (`process.on`, `AsyncLocalStorage`) lives in the Node entry point only. CI asserts this
-   against the built `dist/edge.js`.
+   code (`process.on`, `AsyncLocalStorage`) lives in the Node entry point only. Enforced three
+   ways (§8.3): ESLint bans built-in imports in `src/core`, `src/transports` and `src/edge.ts`;
+   a plugin in `tsup.config.ts` fails the Edge build on one; CI greps `dist/edge.js`. Keep
+   `removeNodeProtocol: false` on the Edge build — tsup otherwise rewrites `node:fs` to `fs`.
 9. **Never log a credential.** Redaction (§6.6) runs *before* the formatter and applies to nested
    objects.
 
@@ -79,30 +81,30 @@ equally, do not ship a second transport speculatively.
 
 ### Current state and commands
 
-The repo is **pre-phase-1**: only the design, README and workflows exist — no `package.json`,
-no `src/`. Work proceeds phase by phase (§14); phase 0 (a live spike confirming §2) gates the
-rest. The target layout is §8.1 and the `exports` map is §4.2 — follow them rather than
-inventing a structure.
+Phase 0 (#4) is done and the toolchain is scaffolded (#5); `src/` holds stub entry points that
+later issues fill in. Work proceeds phase by phase (§14). The target layout is §8.1 and the
+`exports` map is §4.2 — follow them rather than inventing a structure.
 
 `spike/webhook-contract.mjs` is the phase 0 measurement script (#4). When a §2 fact is in doubt,
 re-run its probe (`node --env-file=.env spike/webhook-contract.mjs <probe>`) rather than
 reasoning about it. It is not shipped and nothing in `src/` may import it.
 
-CI (`.github/workflows/ci.yml`) is bootstrap-tolerant: it skips everything until `package.json`
-exists, then runs these scripts by name, so the toolchain PR must define all of them:
+CI (`.github/workflows/ci.yml`) runs these scripts by name; a rename breaks CI:
 
 ```sh
-npm run typecheck   # tsc, no emit
-npm run lint
+npm run typecheck   # tsc --noEmit
+npm run lint        # eslint . && prettier --check .   (npm run format to fix)
 npm test            # vitest run — live tests skip without RAPID7_LIVE_TOKEN
-npm run build       # tsup → dist/{index,next,edge}.{js,cjs,d.ts}  (edge is ESM-only)
-npm run version     # changesets version   — called by release.yml
-npm run release     # changesets publish   — called by release.yml
+npm run build       # tsup → dist/{index,next}.{js,cjs,d.ts,d.cts}, dist/edge.{js,d.ts} (ESM-only)
 ```
 
-Single test: `npx vitest run test/unit/formatter.test.ts -t "flattens newlines"`.
-After `build`, CI greps `dist/edge.js` for any `node:` import and fails on a match (invariant 8).
-CI runs on Node 22; the package's `engines` floor is Node 20.9.
+`release.yml` also calls `npm run version` and `npm run release`; those arrive with Changesets
+in #25. Until then, reject any `release` run waiting on the `release` environment.
+
+Single test: `npx vitest run test/unit/package.test.ts -t "zero runtime dependencies"`.
+CI runs on Node 22; the package's `engines` floor is Node 20.9 (DESIGN §8.2). TypeScript is
+pinned to `~5.9`: `typescript-eslint` 8 does not yet accept TypeScript 6+.
+Prettier skips `*.md`, `.github/` and `spike/` — don't reformat those.
 
 ### Testing
 

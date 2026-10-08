@@ -1,0 +1,18 @@
+{
+  // Typechecking only — tsup emits dist/. No DOM lib: window/document must not type-check (CLAUDE.md invariant 7).
+  "compilerOptions": {
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "Preserve",
+    "moduleResolution": "Bundler",
+    "types": ["node"],
+    "noEmit": true
+  },
+  "include": ["src", "test", "*.config.ts"]
+}

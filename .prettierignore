@@ -1,0 +1,7 @@
+# Existing docs, workflows and the phase 0 measurement script are not reformatted.
+*.md
+.github/
+spike/
+package-lock.json
+dist/
+coverage/
