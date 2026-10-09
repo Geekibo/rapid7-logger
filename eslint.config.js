@@ -17,6 +17,8 @@ export default tseslint.config(
     files: ['**/*.ts'],
     extends: [tseslint.configs.recommendedTypeChecked],
     languageOptions: { parserOptions: { projectService: true } },
+    // An interface may declare a parameter an implementation has no use for.
+    rules: { '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }] },
   },
   {
     files: ['spike/**/*.mjs', '*.config.js'],

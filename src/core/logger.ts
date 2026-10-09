@@ -212,13 +212,14 @@ class CoreLogger implements Logger {
 function resolveTransport(options: LoggerOptions, report: InternalErrorHandler): Transport {
   if (options.transport) return options.transport;
   const config = resolveConfig(options.token, options.region);
+  const formatting = { format: options.format, maxBytes: options.maxBytes };
   if (!config.ok) {
     report(new Error(config.problem));
-    return new ConsoleTransport();
+    return new ConsoleTransport(formatting);
   }
   // A valid token and region. The webhook transport (#11) is wired in here by #15; until then
   // a configured logger also prints to the console, without a warning.
-  return new ConsoleTransport();
+  return new ConsoleTransport(formatting);
 }
 
 const identity: Redactor = (event) => event;

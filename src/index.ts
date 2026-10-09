@@ -2,6 +2,12 @@
 export { createLogger } from './core/logger.js';
 export { formatEvent } from './core/formatter.js';
 export {
+  ConsoleTransport,
+  type ConsoleTransportOptions,
+  type ConsoleLike,
+} from './transports/console.js';
+export { MemoryTransport, type MemoryTransportOptions } from './transports/memory.js';
+export {
   createRedactor,
   DEFAULT_REDACT_KEYS,
   DEFAULT_REDACT_PATTERNS,

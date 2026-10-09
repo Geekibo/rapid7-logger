@@ -284,7 +284,13 @@ Recommendation: **`@geekibo/rapid7-logger`**.
 ```
 
 The core must use **only** `fetch`, `AbortController`, timers and standard JS — no `node:*`
-imports — so the same core runs in Node, Edge and Workers. Anything Node-specific
+imports — so the same core runs in Node, Edge and Workers.
+
+`ConsoleTransport` (#10) prints exactly the line the webhook transport would post — rendered by
+the formatter, so flattened, stamped and capped — which makes local output identical to what
+Rapid7 would store. `MemoryTransport` captures the (already redacted) events and can render
+them as lines; it is unbounded test infrastructure, not a production sink. Both are exported
+for use as `createLogger({ transport })`. Anything Node-specific
 (`process.on('SIGTERM')`) lives in the Node entry point.
 
 ### 4.2 Package exports

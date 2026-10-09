@@ -85,8 +85,9 @@ Phase 0 (#4) is done and the toolchain is scaffolded (#5). `src/core/` has the t
 config validation, `createLogger` (#6), the formatter (#7, `formatEvent`/`createFormatter`,
 not yet called by a transport), redaction (#8, on by default, runs in `emit` before
 delivery) and the bounded queue (#9, `src/core/queue.ts`, owns all six counters;
-`Transport.send` may resolve a `SendOutcome`). `createLogger` composes the queue over a minimal
-`ConsoleTransport` until the webhook transport (#11, wired by #15) lands; `composeLogger` is the
+`Transport.send` may resolve a `SendOutcome`). `ConsoleTransport` and `MemoryTransport` (#10, `src/transports/`) render through the
+formatter. `createLogger` composes the queue over the `ConsoleTransport` until the webhook
+transport (#11, wired by #15) lands; `composeLogger` is the
 internal seam Edge (#22) uses to swap in immediate send.
 `src/next.ts` and `src/edge.ts` are still stubs. Work proceeds phase by phase (§14). The target layout is §8.1 and the
 `exports` map is §4.2 — follow them rather than inventing a structure.
