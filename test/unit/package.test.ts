@@ -10,6 +10,7 @@ interface PackageJson {
   publishConfig: { access: string };
   repository: { url: string };
   files: string[];
+  sideEffects: boolean | string[];
 }
 
 const pkg = JSON.parse(
@@ -38,9 +39,14 @@ describe('package.json', () => {
     }
   });
 
-  it('declares next as an optional peer', () => {
-    expect(pkg.peerDependencies?.next).toBe('>=15.0.0');
+  it('declares next and server-only as optional peers', () => {
+    expect(pkg.peerDependencies).toEqual({ next: '>=15.0.0', 'server-only': '*' });
     expect(pkg.peerDependenciesMeta?.next?.optional).toBe(true);
+    expect(pkg.peerDependenciesMeta?.['server-only']?.optional).toBe(true);
+  });
+
+  it('marks only the Next entry as having side effects (its server-only import must survive)', () => {
+    expect(pkg.sideEffects).toEqual(['./dist/next.js', './dist/next.cjs']);
   });
 
   it('keeps the Node floor at 20.9', () => {

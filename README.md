@@ -137,6 +137,52 @@ The trace lives in `AsyncLocalStorage`, which the Edge runtime lacks: there, pas
 explicitly — `log.child({ traceId })` or a per-call `{ traceId }` — or wire a `contextProvider`
 of your own.
 
+## The token never reaches the browser
+
+The ingestion token is a **write credential**: anyone holding it can write anything into your
+log estate. So the package is server-only, and that is enforced rather than documented:
+
+- `@geekibo/rapid7-logger/next` begins with `import 'server-only'`. Importing it from a
+  Client Component is a **build error**, under Turbopack and webpack — CI builds a fixture app
+  with exactly that misuse and asserts the build fails. The message is Next's: *"'server-only'
+  cannot be imported from a Client Component module"* (Turbopack also says *"…you are using it
+  in the Pages Router"*, which is misleading — it is any client import).
+- Pass the token from a plain server variable such as `RAPID7_TOKEN`. **Never** from a
+  `NEXT_PUBLIC_*` variable — Next inlines those into the client bundle. The package itself reads
+  no environment at all; CI greps `dist/` for `NEXT_PUBLIC_`.
+- Nothing in the package touches `window`, `document` or `navigator` — linted at the source and
+  grepped in the output.
+
+The only sanctioned way to get a browser error into Rapid7 is a **Route Handler**: the browser
+posts `{ message, stack, digest }`, the handler logs it, and the token stays on the server.
+
+```ts
+// app/api/client-error/route.ts
+import { withLogging } from '@geekibo/rapid7-logger/next';
+import { log } from '@/lib/log';
+
+export const POST = withLogging(log, 'clientError', async (log, req: Request) => {
+  const { message, stack, digest } = (await req.json()) as { message?: string; stack?: string; digest?: string };
+  log.error('Client error', { name: 'ClientError', message: String(message), stack, digest });
+  return new Response(null, { status: 204 });
+});
+```
+
+```ts
+// app/error.tsx — a Client Component, so it must not import the logger
+'use client';
+export default function Error({ error }: { error: Error & { digest?: string } }) {
+  void fetch('/api/client-error', {
+    method: 'POST',
+    body: JSON.stringify({ message: error.message, stack: error.stack, digest: error.digest }),
+  });
+  return <p>Something went wrong.</p>;
+}
+```
+
+Outside Next (a plain Node consumer), the `/next` entry's `server-only` import throws or fails to
+resolve by design — use `@geekibo/rapid7-logger` instead.
+
 ## The delivery contract
 
 Stated up front, because vague guarantees are how people come to build alerting on a logger that
