@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { REGIONS, resolveConfig, resolveLevel } from '../../src/core/config.js';
+import {
+  QUEUE_DEFAULTS,
+  REGIONS,
+  resolveConfig,
+  resolveLevel,
+  resolveQueueOptions,
+} from '../../src/core/config.js';
 
 // Shape-valid but not a real token: the endpoint accepts any GUID (§2.6), so nothing here can
 // or should be a credential.
@@ -59,5 +65,35 @@ describe('resolveLevel', () => {
       level: 'info',
       problem: expect.stringMatching(/"verbose"/) as string,
     });
+  });
+});
+
+describe('resolveQueueOptions', () => {
+  it('uses the .NET defaults', () => {
+    expect(QUEUE_DEFAULTS).toEqual({
+      batchSize: 50,
+      flushIntervalMs: 2000,
+      queueLimit: 10_000,
+      maxConcurrency: 8,
+    });
+    expect(resolveQueueOptions({})).toEqual({ options: QUEUE_DEFAULTS, problems: [] });
+  });
+
+  it('floors valid values, allows flushIntervalMs 0, and names each invalid one', () => {
+    const { options, problems } = resolveQueueOptions({
+      batchSize: 2.9,
+      flushIntervalMs: 0,
+      queueLimit: -1,
+      maxConcurrency: NaN,
+    });
+    expect(options).toEqual({
+      batchSize: 2,
+      flushIntervalMs: 0,
+      queueLimit: 10_000,
+      maxConcurrency: 8,
+    });
+    expect(problems).toHaveLength(2);
+    expect(problems[0]).toMatch(/queueLimit -1/);
+    expect(problems[1]).toMatch(/maxConcurrency NaN/);
   });
 });

@@ -58,3 +58,44 @@ export function resolveLevel(value: string | undefined): ResolvedLevel {
     problem: `unknown level "${value}" (expected trace, debug, info, warn, error or fatal); using ${DEFAULT_LEVEL}`,
   };
 }
+
+// Queue options (§7.2): the .NET defaults, which have production mileage.
+export interface QueueOptions {
+  readonly batchSize: number;
+  readonly flushIntervalMs: number;
+  readonly queueLimit: number;
+  readonly maxConcurrency: number;
+}
+
+export const QUEUE_DEFAULTS: QueueOptions = {
+  batchSize: 50,
+  flushIntervalMs: 2000,
+  queueLimit: 10_000,
+  maxConcurrency: 8,
+};
+
+const QUEUE_MINIMUMS: QueueOptions = {
+  batchSize: 1,
+  flushIntervalMs: 0,
+  queueLimit: 1,
+  maxConcurrency: 1,
+};
+
+export type ResolvedQueueOptions = { readonly options: QueueOptions; readonly problems: string[] };
+
+export function resolveQueueOptions(input: Partial<QueueOptions>): ResolvedQueueOptions {
+  const options = { ...QUEUE_DEFAULTS };
+  const problems: string[] = [];
+  for (const name of Object.keys(QUEUE_DEFAULTS) as (keyof QueueOptions)[]) {
+    const value = input[name];
+    if (value === undefined) continue;
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < QUEUE_MINIMUMS[name]) {
+      problems.push(
+        `invalid ${name} ${String(value)} (expected a number >= ${QUEUE_MINIMUMS[name]}); using ${QUEUE_DEFAULTS[name]}`,
+      );
+      continue;
+    }
+    options[name] = Math.floor(value);
+  }
+  return { options, problems };
+}

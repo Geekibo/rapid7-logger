@@ -27,9 +27,21 @@ export interface LogEvent {
   readonly error?: LogErrorInfo;
 }
 
+/**
+ * What a transport may report back from `send` (#9). Optional and additive: a transport that
+ * resolves `void` is counted as delivered. A transport that gives up after retries (§7.1) must
+ * still resolve, so this is how it says the event was not delivered.
+ */
+export interface SendOutcome {
+  readonly delivered: boolean;
+  /** Attempts beyond the first. */
+  readonly retries?: number;
+  readonly error?: string;
+}
+
 export interface Transport {
   /** Deliver one event. MUST NOT throw. MUST resolve even on permanent failure. */
-  send(event: LogEvent): Promise<void>;
+  send(event: LogEvent): Promise<void | SendOutcome>;
   /** Best-effort drain of anything buffered inside the transport. */
   flush(timeoutMs?: number): Promise<void>;
 }
@@ -99,10 +111,14 @@ export interface LoggerOptions {
   readonly maxBytes?: number;
   /** On by default (§6.6). `false` disables redaction entirely. */
   readonly redact?: RedactOptions | false;
-  // Queue options (§7.2). Declared here; honoured in #9.
+  // Queue options (§7.2). Invalid values fall back to the default with one warning.
+  /** Events one drain pass takes from the queue. Default 50. */
   readonly batchSize?: number;
+  /** Wait after a partial pass before the next, in ms. Default 2000; `0` never waits. */
   readonly flushIntervalMs?: number;
+  /** Queued events beyond which new ones are dropped. Default 10,000. */
   readonly queueLimit?: number;
+  /** In-flight sends at once. Default 8. */
   readonly maxConcurrency?: number;
 }
 

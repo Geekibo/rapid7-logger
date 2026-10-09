@@ -1,5 +1,6 @@
 import { ConsoleTransport } from '../transports/console.js';
-import { resolveConfig, resolveLevel } from './config.js';
+import { resolveConfig, resolveLevel, resolveQueueOptions } from './config.js';
+import { createQueue, type Counters, type Dispatcher, type QueueDeps } from './queue.js';
 import { createRedactor, type Redactor } from './redact.js';
 import { isEnabled } from './levels.js';
 import type {
@@ -18,19 +19,9 @@ import type {
 const DEFAULT_FLUSH_TIMEOUT_MS = 2000;
 const WARN_INTERVAL_MS = 60_000;
 
-/** Mutable counters shared by a logger and every child it spawns (§7.4). */
-interface Counters {
-  queued: number;
-  sent: number;
-  dropped: number;
-  failed: number;
-  retried: number;
-  lastError?: string;
-}
-
 /** Everything a child shares with its parent. Only the bound context differs between them. */
 interface Shared {
-  readonly transport: Transport;
+  readonly dispatcher: Dispatcher;
   readonly threshold: Level;
   readonly counters: Counters;
   readonly report: InternalErrorHandler;
@@ -41,29 +32,42 @@ function errorMessage(value: unknown): string {
   return value instanceof Error ? value.message : String(value);
 }
 
+interface Reporter {
+  /** Runtime failures: rate-limited by default so a broken transport cannot spam stdout. */
+  readonly report: InternalErrorHandler;
+  /** Construction problems: each happens once, so each is shown. */
+  readonly immediate: InternalErrorHandler;
+}
+
 // The default handler is one rate-limited console.warn, so a persistently broken transport is
-// visible somewhere without spamming stdout (§7.4). Construction warnings bypass the limiter:
-// they happen once by construction.
-function makeReporter(handler: InternalErrorHandler | undefined): InternalErrorHandler {
+// visible somewhere without spamming stdout (§7.4).
+function makeReporter(handler: InternalErrorHandler | undefined): Reporter {
   if (handler) {
-    return (error) => {
+    const guarded: InternalErrorHandler = (error) => {
       try {
         handler(error);
       } catch {
         // The user's handler is not allowed to break logging either.
       }
     };
+    return { report: guarded, immediate: guarded };
   }
-  let lastWarnedAt = -Infinity;
-  return (error) => {
-    const now = Date.now();
-    if (now - lastWarnedAt < WARN_INTERVAL_MS) return;
-    lastWarnedAt = now;
+  const warn: InternalErrorHandler = (error) => {
     try {
       console.warn(`[rapid7-logger] ${error.message}`);
     } catch {
       // Nothing left to report to.
     }
+  };
+  let lastWarnedAt = -Infinity;
+  return {
+    immediate: warn,
+    report: (error) => {
+      const now = Date.now();
+      if (now - lastWarnedAt < WARN_INTERVAL_MS) return;
+      lastWarnedAt = now;
+      warn(error);
+    },
   };
 }
 
@@ -155,9 +159,10 @@ class CoreLogger implements Logger {
   }
 
   flush(timeoutMs: number = DEFAULT_FLUSH_TIMEOUT_MS): Promise<void> {
+    // The dispatcher bounds itself; this is defence in depth (invariant 4).
     let work: Promise<void>;
     try {
-      work = this.shared.transport.flush(timeoutMs);
+      work = this.shared.dispatcher.flush(timeoutMs);
     } catch (cause) {
       this.fail('flush threw', cause);
       return Promise.resolve();
@@ -188,14 +193,12 @@ class CoreLogger implements Logger {
       this.fail('redaction threw; event dropped', cause);
       return;
     }
-    // Direct delivery for now; #9 replaces this with the bounded queue. A transport that
-    // violates its never-throw contract must still not reach the caller (invariant 3).
+    // enqueue is synchronous and never blocks (invariant 5); the guard is for a dispatcher
+    // that breaks its own contract (invariant 3).
     try {
-      this.shared.transport.send(redacted).catch((cause: unknown) => {
-        this.fail('transport.send rejected', cause);
-      });
+      this.shared.dispatcher.enqueue(redacted);
     } catch (cause) {
-      this.fail('transport.send threw', cause);
+      this.fail('enqueue threw', cause);
     }
   }
 
@@ -227,34 +230,48 @@ function rootContext(options: LoggerOptions): LogContext {
   return context;
 }
 
-/** Create a logger (§5.1). Never throws: a bad configuration degrades to console-only. */
-export function createLogger(options: LoggerOptions = {}): Logger {
-  const report = makeReporter(options.onInternalError);
+export type MakeDispatcher = (deps: QueueDeps) => Dispatcher;
+
+/**
+ * The composition root, shared by every entry point. `createLogger` composes with the bounded
+ * queue; the Edge entry (#22) substitutes an immediate-send dispatcher. Never throws: a bad
+ * configuration degrades to console-only.
+ */
+export function composeLogger(options: LoggerOptions, makeDispatcher: MakeDispatcher): Logger {
+  const { report, immediate } = makeReporter(options.onInternalError);
   const counters: Counters = { queued: 0, sent: 0, dropped: 0, failed: 0, retried: 0 };
+  const queue = resolveQueueOptions(options);
   try {
     const { level, problem } = resolveLevel(options.level);
-    if (problem) report(new Error(problem));
-    const transport = resolveTransport(options, report);
+    if (problem) immediate(new Error(problem));
+    for (const issue of queue.problems) immediate(new Error(issue));
+    const transport = resolveTransport(options, immediate);
     const redact = options.redact === false ? identity : createRedactor(options.redact ?? {});
+    const dispatcher = makeDispatcher({ transport, counters, report, options: queue.options });
     return new CoreLogger(
-      { transport, threshold: level, counters, report, redact },
+      { dispatcher, threshold: level, counters, report, redact },
       rootContext(options),
     );
   } catch (cause) {
-    report(
+    immediate(
       new Error(`createLogger failed; logging to the console only: ${errorMessage(cause)}`, {
         cause,
       }),
     );
+    const dispatcher = createQueue({
+      transport: new ConsoleTransport(),
+      counters,
+      report,
+      options: queue.options,
+    });
     return new CoreLogger(
-      {
-        transport: new ConsoleTransport(),
-        threshold: 'info',
-        counters,
-        report,
-        redact: createRedactor(),
-      },
+      { dispatcher, threshold: 'info', counters, report, redact: createRedactor() },
       {},
     );
   }
+}
+
+/** Create a logger (§5.1). Never throws: a bad configuration degrades to console-only. */
+export function createLogger(options: LoggerOptions = {}): Logger {
+  return composeLogger(options, createQueue);
 }

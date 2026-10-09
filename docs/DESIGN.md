@@ -358,13 +358,24 @@ export interface LogEvent {
   readonly error?: { name: string; message: string; stack?: string; digest?: string };
 }
 
+export interface SendOutcome {           // optional, additive (#9)
+  readonly delivered: boolean;
+  readonly retries?: number;             // attempts beyond the first
+  readonly error?: string;
+}
+
 export interface Transport {
   /** Deliver one event. MUST NOT throw. MUST resolve even on permanent failure. */
-  send(event: LogEvent): Promise<void>;
+  send(event: LogEvent): Promise<void | SendOutcome>;
   /** Best-effort drain of anything buffered inside the transport. */
   flush(timeoutMs?: number): Promise<void>;
 }
 ```
+
+`SendOutcome` was added in #9 and is additive: a transport that resolves `void` is counted as
+delivered. It exists because `send` must *resolve* even after exhausting its retries (§7.1), so
+without it the queue could not tell a delivered event from a dropped one when keeping the
+counters (§7.4).
 
 Two invariants, both of which must be enforced by tests:
 
@@ -411,6 +422,14 @@ Options, as implemented (#6):
 | `format` | Full line override (§5.3). Its output is still flattened and truncated. Forwarded to the transport by #15. |
 | `maxBytes` | Line byte cap (§5.4). Default 32,767. Forwarded to the transport by #15. |
 | `redact` | On by default (§6.6). `false` disables; `{ keys, patterns, replacement, defaults }` extends or replaces the built-ins. |
+| `batchSize` | Events one drain pass takes from the queue (§7.2). Default 50. |
+| `flushIntervalMs` | Wait after a partial pass before the next. Default 2000; `0` never waits. |
+| `queueLimit` | Queued events beyond which new ones are dropped. Default 10,000. |
+| `maxConcurrency` | In-flight sends at once. Default 8. |
+
+Each queue option must be a finite number at or above its minimum (1, 0, 1, 1); anything else
+falls back to the default with one warning. Construction warnings are not rate-limited — each
+problem happens once — while runtime failures are (§7.4).
 
 `createLogger` itself never throws: a failure inside construction also degrades to console-only.
 
@@ -747,6 +766,33 @@ should say that plainly rather than letting people assume.
 - Cap in-flight requests (`maxConcurrency`, default 8) and reuse connections via a keep-alive
   dispatcher, per §2.3.
 
+As implemented (#9), since the endpoint takes one event per request (§2.2) there is no body
+batching; the queue's model is Serilog's:
+
+- A **pass** takes up to `batchSize` events (fixed when the pass starts) and sends each as its
+  own `transport.send`, with at most `maxConcurrency` in flight; as a send settles the next
+  starts.
+- A **full** pass means a backlog: the next pass starts at once. A **partial** pass that ends
+  with events still queued waits `flushIntervalMs` once, then goes again, so a trickle
+  coalesces. `flushIntervalMs: 0` never waits. The interval plays no throughput role.
+- **Eager first event:** every idle → non-empty transition starts a pass on the next
+  microtask, not after the interval. Not synchronous, so the first call of a burst still gets
+  a full pass. An `error` or `fatal` event cancels a pending wait and skips the next one
+  (§7.3's "flush eagerly on error and above", as the queue's default policy).
+- **Overflow drops the newest** event: O(1), the port's behaviour, and it preserves causality
+  (the early lines explain an incident; the newest in a flood are the noise). `dropped` rises
+  and `onInternalError` is told once per episode — the first drop after the queue was last
+  empty. A drop does not set `lastError`.
+- **`flush(timeoutMs)`** cancels a pending wait, runs passes back to back until the queue is
+  empty and nothing is in flight, then calls `transport.flush` with the remaining budget — all
+  raced against one timer, and raced again by the logger as defence in depth. It never rejects.
+  Events enqueued during a flush are included; after a timeout the queue keeps draining.
+- **Timers:** only the inter-pass wait and the flush bound exist, and only while there is work.
+  An idle logger holds no timer. There is no `unref`: an active queue keeping Node alive is
+  what delivers "log once and exit"; #15 adds `beforeExit` ⇒ flush.
+- The Edge entry (§6.3) substitutes an immediate-send dispatcher through the same composition
+  root (`composeLogger`), so `LoggerOptions` is identical on every runtime.
+
 ### 7.3 Flushing — the Next.js problem the .NET package never had
 
 This deserves its own treatment because it is the most likely source of "the logger works
@@ -788,11 +834,17 @@ log.stats();
 The counters are one object shared by a logger and every child it spawns; `stats()` returns a
 copy. Who increments what:
 
-| Field | Incremented by |
-|---|---|
-| `failed`, `lastError` | The logger, when a transport's `send` or `flush` throws or rejects (#6); the webhook transport, when attempts are exhausted (#12) |
-| `queued`, `dropped` | The queue (#9) |
-| `sent`, `retried` | The webhook transport (#11, #12) |
+| Field | Meaning | Written by |
+|---|---|---|
+| `queued` | A gauge: events waiting in the queue (not in flight) | The queue |
+| `sent` | Sends that resolved `void` or `{ delivered: true }` | The queue |
+| `failed` | Sends that threw, rejected or resolved `{ delivered: false }`; a `flush` that threw or rejected | The queue (and the logger for its own guards) |
+| `retried` | The sum of `SendOutcome.retries` | The queue, from what the transport reports (#12) |
+| `dropped` | Events refused at `queueLimit` | The queue |
+| `lastError` | The message of the most recent failure. Not set by a drop | The queue |
+
+One writer per field, so the transport seam (§4.3) carries no counters: a transport reports
+through `SendOutcome` and the queue keeps the books.
 
 Plus an `onInternalError` callback (default: one `console.warn`, rate-limited) so a persistently
 broken token is visible somewhere without spamming stdout. Note the limit: only a *malformed*
@@ -1195,6 +1247,8 @@ Public repos have specific hazards. These are the ones that matter:
    and the npm scope `@geekibo`. Confirm both, and **claim the `@geekibo` scope on npmjs early** —
    scope squatting is real and the name is load-bearing in every example here.
 2. **Default `flushMode`** — recommend batch, with eager flush at `error` and above (§7.3).
+   The queue (#9) already drains eagerly on `error`+ by default; whether a `flushMode: 'sync'`
+   option that *awaits* delivery is also wanted is #15's call.
 3. **Whether to ship `withLogging` in v1** or keep v1 to the primitive logger. It is the piece
    most likely to need redesign after real use; shipping it in `0.x` is fine, in `1.0` less so.
 4. **Require signed commits?** (§11.1) Strong, but it adds real contributor friction and can
