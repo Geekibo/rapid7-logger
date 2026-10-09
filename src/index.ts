@@ -23,5 +23,6 @@ export type {
   LogMethod,
   RedactOptions,
   Region,
+  SendOutcome,
   Transport,
 } from './core/types.js';
