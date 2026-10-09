@@ -1,7 +1,8 @@
 import { ConsoleTransport } from '../transports/console.js';
 import { Rapid7WebhookTransport } from '../transports/rapid7-webhook.js';
 import { resolveConfig, resolveLevel, resolveQueueOptions } from './config.js';
-import { createQueue, type Counters, type Dispatcher, type QueueDeps } from './queue.js';
+import { newCounters, type Counters } from './counters.js';
+import { createQueue, type Dispatcher, type QueueDeps } from './queue.js';
 import { createRedactor, type Redactor } from './redact.js';
 import { isEnabled } from './levels.js';
 import type {
@@ -266,7 +267,7 @@ export type MakeDispatcher = (deps: QueueDeps) => Dispatcher;
  */
 export function composeLogger(options: LoggerOptions, makeDispatcher: MakeDispatcher): Logger {
   const { report, immediate } = makeReporter(options.onInternalError);
-  const counters: Counters = { queued: 0, sent: 0, dropped: 0, failed: 0, retried: 0 };
+  const counters = newCounters();
   const queue = resolveQueueOptions(options);
   try {
     const { level, problem } = resolveLevel(options.level);

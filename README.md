@@ -212,7 +212,27 @@ The answer is `after()` from `next/server` for post-response flushing, plus an e
 [§7.3](docs/DESIGN.md#73-flushing--the-nextjs-problem-the-net-package-never-had).
 
 The Edge runtime gets a separate entry point (`/edge`) that sends immediately, because Edge has
-no reliable background timer.
+no reliable background timer:
+
+```ts
+import { createLogger } from '@geekibo/rapid7-logger/edge';   // ESM only
+
+const log = createLogger({ token: process.env.RAPID7_TOKEN, service: 'edge-fn' });
+
+export default async function handler(req: Request, ctx: { waitUntil(p: Promise<unknown>): void }) {
+  log.info('hit', { path: new URL(req.url).pathname });   // posted at once
+  ctx.waitUntil(log.flush());                              // or: await log.flush(); or Next's after()
+  return new Response('ok');
+}
+```
+
+Every call posts straight away; `flush()` is the promise that settles when they have. The trade
+is latency per line — measured, an awaited `flush()` holds the response as long as the slowest
+POST (about a second against a slow endpoint), while `after()`/`waitUntil` hides it. In a Next
+Edge route, combine `createLogger` from `/edge` with `withLogging` from `/next`; see
+[`examples/nextjs-app`](examples/nextjs-app). The `/edge` entry does **not** import
+`server-only` (it would throw at load in a Cloudflare Worker); a Next app adds that import in
+its own server module. Note that Next 16 marks the Edge Runtime deprecated.
 
 ## Findings about the endpoint
 

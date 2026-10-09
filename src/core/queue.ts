@@ -1,5 +1,8 @@
 import type { QueueOptions } from './config.js';
+import { createAccounting, type Counters } from './counters.js';
 import type { InternalErrorHandler, LogEvent, SendOutcome, Transport } from './types.js';
+
+export type { Counters } from './counters.js';
 
 // The bounded queue (DESIGN §7.2). The endpoint takes one event per request (§2.2), so there
 // is no body batching here: a "pass" takes up to `batchSize` events off the queue and sends
@@ -7,16 +10,6 @@ import type { InternalErrorHandler, LogEvent, SendOutcome, Transport } from './t
 // the transport does: `enqueue` is synchronous and never blocks (invariant 5), nothing here
 // ever throws or rejects (invariant 3), and `flush` returns when its timeout elapses whether or
 // not the queue drained (invariant 4).
-
-/** Mutable counters (§7.4). One object is shared by a logger and every child it spawns. */
-export interface Counters {
-  queued: number;
-  sent: number;
-  dropped: number;
-  failed: number;
-  retried: number;
-  lastError?: string;
-}
 
 /** The seam between the logger and delivery. Edge (#22) substitutes an immediate-send one. */
 export interface Dispatcher {
@@ -33,10 +26,6 @@ export interface QueueDeps {
 }
 
 const EAGER_LEVELS = new Set(['error', 'fatal']);
-
-function errorMessage(value: unknown): string {
-  return value instanceof Error ? value.message : String(value);
-}
 
 export function createQueue({ transport, counters, report, options }: QueueDeps): Dispatcher {
   const { batchSize, flushIntervalMs, queueLimit, maxConcurrency } = options;
@@ -71,32 +60,7 @@ export function createQueue({ transport, counters, report, options }: QueueDeps)
     return event;
   }
 
-  function safeReport(error: Error): void {
-    try {
-      report(error);
-    } catch {
-      // The reporter is not allowed to break the pump.
-    }
-  }
-
-  function settle(outcome: void | SendOutcome): void {
-    if (outcome && outcome.delivered === false) {
-      counters.failed += 1;
-      if (outcome.error !== undefined) counters.lastError = outcome.error;
-      safeReport(new Error(`event not delivered: ${outcome.error ?? 'transport gave up'}`));
-    } else {
-      counters.sent += 1;
-    }
-    if (outcome && typeof outcome.retries === 'number' && outcome.retries > 0) {
-      counters.retried += outcome.retries;
-    }
-  }
-
-  function fail(what: string, cause: unknown): void {
-    counters.failed += 1;
-    counters.lastError = errorMessage(cause);
-    safeReport(new Error(`${what}: ${errorMessage(cause)}`, { cause }));
-  }
+  const { settle, fail, safeReport } = createAccounting(counters, report);
 
   function afterSend(): void {
     inFlight -= 1;
