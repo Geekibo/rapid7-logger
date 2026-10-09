@@ -63,11 +63,18 @@ export interface FormatterOptions {
 /** Receives the logger's own failures. The default is one rate-limited `console.warn`. */
 export type InternalErrorHandler = (error: Error) => void;
 
-/** Redaction options (§6.6). Declared here; implemented in #8. */
+/**
+ * Redaction options (§6.6). `keys` and `patterns` extend the defaults unless `defaults` is
+ * `false`. A key matches case-insensitively as a substring once `-`, `_` and whitespace are
+ * removed; a pattern is applied to every string in the event.
+ */
 export interface RedactOptions {
   readonly keys?: readonly string[];
   readonly patterns?: readonly RegExp[];
+  /** Default `'[redacted]'`. */
   readonly replacement?: string;
+  /** Set `false` to drop the built-in keys and patterns. Default `true`. */
+  readonly defaults?: boolean;
 }
 
 // `Level | (string & {})` keeps autocomplete for the known values while accepting the plain
@@ -90,7 +97,7 @@ export interface LoggerOptions {
   readonly format?: (event: LogEvent) => string;
   /** Line byte cap (§5.4). Declared here; forwarded to the transport by #15. */
   readonly maxBytes?: number;
-  /** Declared here; honoured in #8. */
+  /** On by default (§6.6). `false` disables redaction entirely. */
   readonly redact?: RedactOptions | false;
   // Queue options (§7.2). Declared here; honoured in #9.
   readonly batchSize?: number;

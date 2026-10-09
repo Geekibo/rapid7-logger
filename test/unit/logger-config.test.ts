@@ -161,3 +161,11 @@ describe('the console fallback', () => {
     await expect(createLogger({ onInternalError: () => {} }).flush(10)).resolves.toBeUndefined();
   });
 });
+
+describe('redaction reaches the console fallback', () => {
+  it('prints [redacted], never the secret', () => {
+    createLogger({ onInternalError: () => {} }).info('login', { password: 'hunter2' });
+    expect(info.mock.calls[0]?.[1]).toEqual({ password: '[redacted]' });
+    expect(JSON.stringify(info.mock.calls)).not.toContain('hunter2');
+  });
+});
