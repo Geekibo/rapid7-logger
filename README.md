@@ -50,7 +50,7 @@ export const log = createLogger({
 log.info('Survey published', { surveyId: 42 });
 log.error('Export failed', err, { surveyId: 42 });   // Error is a first-class argument
 
-const reqLog = log.child({ traceId });               // bound context, inherited
+const reqLog = log.child({ userId });                // bound context, inherited
 await log.flush(2000);                                // bounded, explicit
 ```
 
@@ -74,6 +74,46 @@ export const publishSurvey = withLogging('publishSurvey', async (log, id: number
   return api.publish(id);
 });
 ```
+
+## Correlation
+
+One click in Rapid7 should show every line a request produced, across tiers. The logger uses
+[W3C Trace Context](https://www.w3.org/TR/trace-context/) so the id it stamps is the one
+Application Insights and OpenTelemetry already use.
+
+```ts
+import { createLogger, withTrace, outboundHeaders } from '@geekibo/rapid7-logger';
+
+export const log = createLogger({ token: process.env.RAPID7_TOKEN, service: 'web' });
+
+// 1. At the top of a request: read the inbound traceparent (or start a new trace).
+export async function handle(req: Request) {
+  return withTrace(req, async () => {
+    log.info('request received');              // 2. every line, from any logger, is stamped
+    const data = await loadFromApi();          //    … no plumbing, no child(), no arguments
+    return Response.json(data);
+  });
+}
+
+// 3. Outbound — the step people skip, and the one that makes the feature worth having.
+async function loadFromApi() {
+  const res = await fetch('https://api.internal/surveys', {
+    headers: { ...outboundHeaders(), accept: 'application/json' },
+  });
+  return res.json();
+}
+```
+
+Every line inside `withTrace` carries the stamp `<trace-id>: _ ` (it has to be exactly that;
+see [§2.5](docs/DESIGN.md#25-the-clickable-correlation-trick)), so clicking the id in Rapid7
+pivots to every entry from this tier — and from the API tier too, once it logs the same
+`traceparent` it received. `outboundHeaders()` returns `{}` outside a trace, so spreading it
+is always safe. `currentTraceId()` gives you the id for anything else (a response header, an
+error page).
+
+The trace lives in `AsyncLocalStorage`, which the Edge runtime lacks: there, pass it
+explicitly — `log.child({ traceId })` or a per-call `{ traceId }` — or wire a `contextProvider`
+of your own.
 
 ## The delivery contract
 

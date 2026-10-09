@@ -106,6 +106,13 @@ export interface LoggerOptions {
   readonly transport?: Transport;
   /** The `fetch` the webhook transport uses. Defaults to the global one. Ignored with `transport`. */
   readonly fetch?: typeof fetch;
+  /**
+   * Ambient context read at log time (§6.4), merged between bound and per-call context:
+   * per-call > ambient > bound. The Node entry wires this to the current trace by default;
+   * on a runtime with no `AsyncLocalStorage` it is the hook for explicit passing. A throw is
+   * reported and the event ships without ambient keys.
+   */
+  readonly contextProvider?: () => LogContext | undefined;
   readonly onInternalError?: InternalErrorHandler;
   /** Full line override (§5.3). Passed to the transport. */
   readonly format?: (event: LogEvent) => string;

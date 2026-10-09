@@ -1,6 +1,7 @@
 import { createLogger as createCoreLogger } from '../core/logger.js';
 import type { Logger, LoggerOptions } from '../core/types.js';
 import { processLifecycle, type Lifecycle } from './lifecycle.js';
+import { ambientTraceContext } from './trace.js';
 
 // The Node createLogger (DESIGN §4.1, §7.3): the core logger plus lifecycle flush. The core
 // types stay runtime-agnostic; only the Node entry knows about `lifecycle` and `close()`.
@@ -35,7 +36,11 @@ function lifecycleTimeout(options: LifecycleOptions | undefined): number {
 /** Build a Node logger against an explicit registry; tests inject a fake process. */
 export function createNodeLogger(options: NodeLoggerOptions, lifecycle: Lifecycle): NodeLogger {
   const { lifecycle: lifecycleOptions, ...coreOptions } = options;
-  const core = createCoreLogger(coreOptions);
+  // The current trace (§6.4) is the default ambient context; an explicit provider replaces it.
+  const core = createCoreLogger({
+    ...coreOptions,
+    contextProvider: options.contextProvider ?? ambientTraceContext,
+  });
   let unregister: () => void = () => {};
   if (lifecycleOptions !== false) {
     // createLogger never throws: a registry that fails degrades to "no hooks".

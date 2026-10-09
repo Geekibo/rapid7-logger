@@ -14,9 +14,20 @@ describe('the Node entry point', () => {
       'MemoryTransport',
       'REGIONS',
       'Rapid7WebhookTransport',
+      'childOf',
       'createLogger',
       'createRedactor',
+      'currentTrace',
+      'currentTraceId',
+      'currentTraceparent',
       'formatEvent',
+      'formatTraceparent',
+      'generateTraceContext',
+      'generateTraceparent',
+      'outboundHeaders',
+      'parseTraceparent',
+      'readTraceparent',
+      'withTrace',
     ]);
   });
 });

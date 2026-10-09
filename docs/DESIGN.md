@@ -452,6 +452,7 @@ Options, as implemented (#6):
 | `service`, `env` | Become root bound context: `service=… env=…` on every line. |
 | `transport` | Injects a `Transport` (§4.3) and bypasses token resolution — how the Console and Memory transports are used. |
 | `fetch` | The `fetch` the webhook transport uses (default: the global one). Ignored with `transport`. |
+| `contextProvider` | Ambient context read at log time, merged per-call > ambient > bound (§6.4). The Node entry wires the current trace by default. |
 | `lifecycle` *(Node entry only)* | `false` to register no process hooks; `{ timeoutMs }` (default 2000) bounds the flush each hook runs (§7.3). |
 | `close(timeoutMs?)` *(Node entry only)* | Unregisters the logger from the hooks and flushes it, bounded. Idempotent. |
 | `onInternalError` | `(error: Error) => void`. Default: one `console.warn`, rate-limited to one per minute per logger. A throwing handler is swallowed. |
@@ -694,6 +695,36 @@ import { withTrace, currentTraceId } from '@geekibo/rapid7-logger/next';
 ```
 
 `AsyncLocalStorage` is unavailable on Edge; fall back to explicit passing there.
+
+As implemented (#16):
+
+- **A core seam, not a Node feature.** `LoggerOptions.contextProvider?: () => LogContext |
+  undefined` is read at log time and merged **per-call > ambient > bound** — a request's id
+  must beat a logger, or a child, built at module load. A throwing provider is reported and the
+  event ships without ambient keys. This is what makes the Edge fallback and an OpenTelemetry
+  bridge one-liners.
+- **The pure half lives in the core** (`src/core/traceparent.ts`, no imports, global `crypto`):
+  `parseTraceparent` (OpenTelemetry's rules: case-insensitive, `ff` invalid, `00` must have
+  four fields, future versions may carry more, all-zero ids invalid), `formatTraceparent`,
+  `generateTraceContext`/`generateTraceparent` (sampled, never all-zero), `childOf`, and
+  `readTraceparent` over a raw string, a `Request`, an `IncomingMessage`, a `Headers`, a plain
+  headers object or a `TraceContext`. Never throws.
+- **The Node half** (`src/node/trace.ts`) holds the trace in one `AsyncLocalStorage` per
+  process (cached on `globalThis` under a well-known symbol, for the dual ESM/CJS case) and
+  exports `withTrace(source?, fn)`, `currentTrace`, `currentTraceId`, `currentTraceparent` and
+  `outboundHeaders`. The Node `createLogger` wires the store as the default provider, so **any
+  logger stamps the ambient trace id — `child()` is not needed for correlation**. An explicit
+  valid header wins and this tier gets its own span (new parent-id, same trace-id and
+  `tracestate`); nested with no usable header ⇒ a child span; neither ⇒ a new sampled trace.
+- **What is stamped:** only `traceId`, in full; a `spanId` pair would not be clickable and
+  costs ~24 bytes a line. The parent id is available from `currentTrace()`.
+- **Outbound:** `outboundHeaders()` returns `{ traceparent, tracestate? }` carrying the current
+  span, or `{}` outside a trace so `{ ...outboundHeaders() }` is always safe. It does not mint
+  a span per call — a logger is not a tracer.
+- **Edge:** explicit passing (`child({ traceId })` or per-call), or a user-supplied
+  `contextProvider` on a runtime that has ALS. The pure helpers may be re-exported from the
+  Edge entry (#22). The `from '@geekibo/rapid7-logger/next'` import above is #19's decision:
+  the Next entry must also run on Edge.
 
 ### 6.5 Making browser misuse structurally impossible
 
@@ -941,9 +972,9 @@ succeeds silently (§2.6).
 ```
 rapid7-logger/
 ├── src/
-│   ├── core/            logger.ts  formatter.ts  queue.ts  redact.ts  levels.ts  config.ts  types.ts
+│   ├── core/            logger.ts  formatter.ts  queue.ts  redact.ts  levels.ts  config.ts  traceparent.ts  types.ts
 │   ├── transports/      rapid7-webhook.ts  console.ts  memory.ts
-│   ├── node/            lifecycle.ts (process-level registry)  logger.ts (Node createLogger)
+│   ├── node/            lifecycle.ts (process-level registry)  logger.ts (Node createLogger)  trace.ts (AsyncLocalStorage)
 │   ├── index.ts         Node entry  (re-exports src/node + core; AsyncLocalStorage in #16)
 │   ├── next.ts          Next entry  ('server-only', withLogging, onRequestError, after())
 │   └── edge.ts          Edge entry  (immediate-send)

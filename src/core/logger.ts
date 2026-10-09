@@ -27,6 +27,7 @@ interface Shared {
   readonly counters: Counters;
   readonly report: InternalErrorHandler;
   readonly redact: Redactor;
+  readonly provider: (() => LogContext | undefined) | undefined;
 }
 
 function errorMessage(value: unknown): string {
@@ -182,7 +183,8 @@ class CoreLogger implements Logger {
       timestamp: new Date(),
       level,
       message,
-      context: { ...this.context, ...context },
+      // per-call > ambient > bound: a request's trace id must beat a logger built at load.
+      context: { ...this.context, ...this.ambient(), ...context },
       ...(error ? { error } : {}),
     };
     // Redaction runs here, before anything can buffer, format or print the event (invariant
@@ -200,6 +202,26 @@ class CoreLogger implements Logger {
       this.shared.dispatcher.enqueue(redacted);
     } catch (cause) {
       this.fail('enqueue threw', cause);
+    }
+  }
+
+  /** The ambient context (§6.4). A broken provider cannot make a level method throw. */
+  private ambient(): LogContext {
+    const provider = this.shared.provider;
+    if (!provider) return {};
+    try {
+      const value = provider();
+      return typeof value === 'object' && value !== null ? value : {};
+    } catch (cause) {
+      this.shared.report(
+        new Error(
+          `contextProvider threw; event sent without ambient context: ${errorMessage(cause)}`,
+          {
+            cause,
+          },
+        ),
+      );
+      return {};
     }
   }
 
@@ -254,7 +276,7 @@ export function composeLogger(options: LoggerOptions, makeDispatcher: MakeDispat
     const redact = options.redact === false ? identity : createRedactor(options.redact ?? {});
     const dispatcher = makeDispatcher({ transport, counters, report, options: queue.options });
     return new CoreLogger(
-      { dispatcher, threshold: level, counters, report, redact },
+      { dispatcher, threshold: level, counters, report, redact, provider: options.contextProvider },
       rootContext(options),
     );
   } catch (cause) {
@@ -270,7 +292,14 @@ export function composeLogger(options: LoggerOptions, makeDispatcher: MakeDispat
       options: queue.options,
     });
     return new CoreLogger(
-      { dispatcher, threshold: 'info', counters, report, redact: createRedactor() },
+      {
+        dispatcher,
+        threshold: 'info',
+        counters,
+        report,
+        redact: createRedactor(),
+        provider: options.contextProvider,
+      },
       {},
     );
   }
