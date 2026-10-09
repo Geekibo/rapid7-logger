@@ -368,6 +368,9 @@ Notes:
 - **`./next` is built like `./edge`** (#18): alone and unsplit, `platform: 'neutral'`, with the
   built-in guard, because it runs under both `NEXT_RUNTIME` values. CJS is kept for the Node
   side of a Next app.
+- **`sideEffects` is `["./dist/next.js", "./dist/next.cjs"]`, not `false`** (#20): the Next
+  entry's `import 'server-only'` must survive tree-shaking (§6.5). `server-only` is an optional
+  peer alongside `next`.
 - **Types are declared per condition.** In a `type: module` package a `.d.ts` is read as ESM
   types, so a single `types` entry would give CJS consumers (`moduleResolution: node16`) the
   "masquerading as ESM" error. The `require` branch points at `.d.cts`; `@arethetypeswrong/cli`
@@ -808,6 +811,36 @@ layered, because documentation alone demonstrably does not work:
 4. **A README section stating the rule and the reason**, and pointing at the route-handler
    pattern as the sanctioned way to get client errors server-side.
 
+As implemented (#20), with what was measured on Next 16.4.0:
+
+1. **`import 'server-only'` is the first statement of the Next entry.** Next aliases
+   `server-only` (and `client-only`) to its own copies in every bundler context — webpack's
+   `createServerOnlyClientOnlyAliases`, Turbopack's import map — so a Next app never installs
+   the package; `next/jest` maps it to an empty mock. It is declared as an **optional
+   peerDependency** so tsup externalises it (without that the build fails to resolve it) and
+   `dependencies` stays empty. Outside Next the real `server-only@0.0.1` throws at import under
+   the default export condition and loads empty under `react-server`; a plain Node consumer of
+   `/next` therefore gets a throw or `ERR_MODULE_NOT_FOUND` by design, and should use the Node
+   entry. The repository's own tests alias it to an empty stub (`test/stubs/server-only.ts`).
+2. **`sideEffects` is a list, not `false`.** Measured: with `sideEffects: false`, a client
+   page doing a bare `import '@geekibo/rapid7-logger/next'` built clean — the bundler dropped
+   the side-effect-free module and the guard with it. `["./dist/next.js", "./dist/next.cjs"]`
+   keeps the import; the Next entry is one unsplit file, so consumers lose nothing. A
+   divergence from §4.2's literal JSON, recorded there.
+3. **The package reads no environment.** The token is handed in by the app, so the rule is
+   documentation — `RAPID7_TOKEN`, never `NEXT_PUBLIC_*` — plus a CI grep of `dist/` for
+   `NEXT_PUBLIC_` and a test that `src/next*` never touches `process.env`.
+4. **Browser globals** are banned by ESLint over `src/**` and grepped out of `dist/*.js`.
+5. **The done-when is a real `next build`.** `test/next-build/fixture/` is a minimal App Router
+   app (pinned `next@16.4.0`, React 19.3; `@types/node` pinned because `next build` otherwise
+   installs it mid-build; `turbopack.root` set to the repository root because the package is
+   reached through a symlink from outside the app). `test/next-build/guard.test.ts` builds the
+   control (a Server Component importing `/next`) under Turbopack and webpack — it must pass —
+   then copies `misuse/page.tsx` (`'use client'` + the import) into `app/bad/` and builds again:
+   both bundlers exit non-zero and name `dist/next.js` and `app/bad/page.tsx`. It runs as its
+   own CI job, `next-client-import-guard`, outside the required `ci` context (R11: it installs
+   Next, React and a SWC binary) and can never skip silently there.
+
 ### 6.6 Redaction
 
 The package will be pointed at applications handling session data, account identifiers and
@@ -1052,6 +1085,7 @@ rapid7-logger/
 │   ├── unit/            fake fetch; formatter, redaction, retry, queue bounds
 │   ├── contract/        Transport invariants: never throws, flush is bounded
 │   ├── node/            lifecycle integration: spawns node against dist/ (build first)
+│   ├── next-build/      guard.test.ts + fixture/: a real next build proving §6.5 (own CI job)
 │   └── live/            gated integration test (§9.2)
 ├── spike/               phase 0 endpoint measurement script (#4) — not shipped
 ├── examples/
@@ -1089,6 +1123,9 @@ Beyond the usual, three project-specific gates:
    `dist/edge.js`, `dist/next.js` and `dist/next.cjs` as a last check.
 2. **The public API surface is snapshotted.** An accidental type-level breaking change in a
    logger is painful to discover downstream.
+4. **A Client Component import of `/next` fails `next build`** (§6.5, #20), as a separate CI
+   job that installs a pinned Next fixture; and `dist/` contains no `NEXT_PUBLIC_` and no
+   browser global.
 3. **`send()` never rejects**, asserted against a transport whose `fetch` throws, returns `500`,
    returns `401`, and times out. This is the headline guarantee; test it like one. Implemented
    (#13) as `test/contract/transport.contract.ts`, a suite parameterised over every transport:
@@ -1431,7 +1468,7 @@ Public repos have specific hazards. These are the ones that matter:
 | R3 | One request per event limits throughput | Measure in §9. If it binds, the honest answer is stdout + a cluster collector, not a cleverer client. |
 | R4 | Serverless freeze silently loses logs (§7.3) | `after()` by default in `withLogging`; eager flush on `error`+. Make the failure mode a documented, tested case. |
 | R5 | Duplicates from at-least-once retry (§7.1) | Documented in the contract. Flagged for anything that counts events. |
-| R6 | Token leaks to a browser bundle | Four layered defences (§6.5), including a build-time error. Plus secret scanning with push protection (§11.5). |
+| R6 | Token leaks to a browser bundle | Four layered defences (§6.5), including a build-time error proven by a real `next build` in CI (#20). Plus secret scanning with push protection (§11.5). |
 | R7 | Maintenance burden of a public package | Tight scope (§3.3); zero runtime dependencies means little routine upkeep. |
 | R8 | **Trusted publisher misconfiguration** — not validated on save, expires if unused for 2 days (§10.3) | Configure it immediately before the first release, and treat that release as the test. |
 | R9 | **Renaming `release.yml` silently breaks publishing** | Note it in `CONTRIBUTING.md`; the filename is part of npm-side config. |

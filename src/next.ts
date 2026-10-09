@@ -1,3 +1,8 @@
+// Invariant 7 (DESIGN §6.5): importing this entry from a Client Component must be a BUILD error.
+// Next aliases 'server-only' in every bundler context, so an app never installs it; outside Next
+// this import throws or fails to resolve by design — use the Node entry there. Keep it first.
+import 'server-only';
+
 // Next.js entry point (DESIGN §6). Runs under both NEXT_RUNTIME values, so it imports from the
 // core only — never from src/index or src/node (invariant 8; enforced by ESLint, the build and
 // CI). `import 'server-only'` lands in #20. `withLogging` reaches `after()` through a dynamic

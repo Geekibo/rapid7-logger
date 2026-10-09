@@ -6,3 +6,5 @@ coverage/
 .env
 .env.local
 .npmrc
+test/next-build/fixture/.next/
+test/next-build/fixture/next-env.d.ts

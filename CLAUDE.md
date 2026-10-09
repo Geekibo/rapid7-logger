@@ -48,8 +48,9 @@ These are correctness, not style. A change that breaks one of these is wrong eve
    every consumer. `dependencies` stays `{}`.
 7. **Server-only.** No browser entry point, no `window`, no `navigator`. The ingestion token is a
    **write credential** — if it reaches a client bundle, anyone can write into the log estate.
-   The Next entry point must `import 'server-only'` so a Client Component import is a *build*
-   error (§6.5).
+   The Next entry point starts with `import 'server-only'` so a Client Component import is a
+   *build* error (§6.5); `sideEffects` lists the Next bundles so that import survives
+   tree-shaking, and `test/next-build/` proves it with a real `next build` in its own CI job.
 8. **The core imports no `node:*` modules.** It must run on Edge and in Workers. Node-specific
    code (`process.on`, `AsyncLocalStorage`) lives in the Node entry point only. The Next entry
    runs on Edge too, so it gets the same rules. Enforced three ways (§8.3): ESLint bans
@@ -114,6 +115,7 @@ npm run typecheck   # tsc --noEmit
 npm run lint        # eslint . && prettier --check .   (npm run format to fix)
 npm run build       # tsup → dist/{index,next}.{js,cjs,d.ts,d.cts}, dist/edge.{js,d.ts} (ESM-only)
 npm test            # vitest run — after build; live tests skip without RAPID7_LIVE_TOKEN
+npm run test:next-build   # the next build guard; needs npm ci --prefix test/next-build/fixture
 ```
 
 `release.yml` also calls `npm run version` and `npm run release`; those arrive with Changesets
@@ -132,6 +134,8 @@ Prettier skips `*.md`, `.github/` and `spike/` — don't reformat those.
   is a `describe` factory; add a one-line `*.contract.test.ts` for any new transport.
 - `examples/node-basic/` imports the package by name through a symlink the `test/node/` example
   test creates; it must stay consumer-shaped (no `../../dist` imports).
+- `test/next-build/` — a pinned Next fixture built with and without a `'use client'` misuse;
+  skips locally unless the fixture is installed, fails in CI if it cannot run.
 - `test/node/` — lifecycle integration: spawns `node` on fixtures that import the **built**
   `dist/`, so run `npm run build` before `npm test` locally (CI builds before testing; the
   suite skips without `dist/` locally and fails without it when `CI` is set).

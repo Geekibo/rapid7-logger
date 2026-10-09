@@ -1,0 +1,16 @@
+{
+  "name": "next-client-import-guard",
+  "private": true,
+  "description": "CI fixture for #20: a Client Component importing @geekibo/rapid7-logger/next must fail to build.",
+  "dependencies": {
+    "next": "16.4.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "20.19.43",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "typescript": "5.9.3"
+  }
+}

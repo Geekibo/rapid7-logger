@@ -82,4 +82,57 @@ jobs:
               echo "$bundle clean"
             fi
           done
+          # Invariant 7 (DESIGN §6.5): the token is handed in by the app and must never come
+          # from a NEXT_PUBLIC_ variable, and nothing shipped may touch a browser global.
+          if grep -rn "NEXT_PUBLIC_" dist/; then
+            echo "::error::dist/ references NEXT_PUBLIC_ — see CLAUDE.md invariant 7"
+            status=1
+          fi
+          if grep -nwE "window|navigator|document" dist/*.js dist/*.cjs; then
+            echo "::error::dist/ touches a browser global — see CLAUDE.md invariant 7"
+            status=1
+          fi
           exit $status
+
+  # Invariant 7's done-when (#20): a Client Component importing the Next entry must fail
+  # `next build`, and the same app without the misuse must build. Kept out of the required `ci`
+  # context: it installs Next, React and a SWC binary into a fixture, which is slower and more
+  # supply-chain surface than the unit suite. Never skips silently (REQUIRE_NEXT_BUILD_GUARD).
+  next-client-import-guard:
+    name: next-client-import-guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Detect toolchain
+        id: detect
+        run: |
+          if [ -f package.json ]; then
+            echo "toolchain=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "toolchain=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-node@v6
+        if: steps.detect.outputs.toolchain == 'true'
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            test/next-build/fixture/package-lock.json
+
+      - name: Install and build the package
+        if: steps.detect.outputs.toolchain == 'true'
+        run: npm ci && npm run build
+
+      - name: Install the fixture
+        if: steps.detect.outputs.toolchain == 'true'
+        run: npm ci --prefix test/next-build/fixture
+
+      - name: Build the fixture with and without the misuse
+        if: steps.detect.outputs.toolchain == 'true'
+        env:
+          REQUIRE_NEXT_BUILD_GUARD: '1'
+          NEXT_TELEMETRY_DISABLED: '1'
+        run: npm run test:next-build
