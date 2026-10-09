@@ -991,6 +991,15 @@ Confirming arrival requires the Rapid7 **Query API**, which uses a *different* c
 read API key) from the ingestion token. Keep that client in `test/live/` only — it is test
 infrastructure, not part of the shipped package (§3.3).
 
+As implemented (#14): `test/live/webhook.live.test.ts` runs end to end through
+`createLogger({ token, region })` and reads back through `test/live/query-api.ts`. It takes the
+four variables the spike settled — `RAPID7_LIVE_TOKEN`, `RAPID7_LIVE_REGION`,
+`RAPID7_LIVE_LOG_ID`, `RAPID7_QUERY_API_KEY` (see `.env.example`); with only the token set, the
+read-back assertions skip and the post path still runs. It asserts a lone event is accepted
+and found, that Rapid7's own stamp is within 5 s of the post (measured ~0.5 s) and the entry
+is searchable within 60 s (measured ~10 s), and that a real nested stack trace is stored as
+one entry identical to the formatter's line.
+
 ---
 
 ## 10. Publishing to npm
