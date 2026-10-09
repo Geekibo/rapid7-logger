@@ -116,6 +116,7 @@ npm run lint        # eslint . && prettier --check .   (npm run format to fix)
 npm run build       # tsup → dist/{index,next}.{js,cjs,d.ts,d.cts}, dist/edge.{js,d.ts} (ESM-only)
 npm test            # vitest run — after build; live tests skip without RAPID7_LIVE_TOKEN
 npm run test:next-build   # the next build guard; needs npm ci --prefix test/next-build/fixture
+npm run test:next-app     # builds, starts and drives examples/nextjs-app; needs npm ci --prefix examples/nextjs-app
 ```
 
 `release.yml` also calls `npm run version` and `npm run release`; those arrive with Changesets
@@ -134,8 +135,14 @@ Prettier skips `*.md`, `.github/` and `spike/` — don't reformat those.
   is a `describe` factory; add a one-line `*.contract.test.ts` for any new transport.
 - `examples/node-basic/` imports the package by name through a symlink the `test/node/` example
   test creates; it must stay consumer-shaped (no `../../dist` imports).
+- `examples/nextjs-app/` installs the package with `file:../..` and a committed lockfile; its
+  `next.config.ts` sets `turbopack.root` only because of that symlink.
 - `test/next-build/` — a pinned Next fixture built with and without a `'use client'` misuse;
   skips locally unless the fixture is installed, fails in CI if it cannot run.
+- `test/next-app/` — builds and starts `examples/nextjs-app` against a local log server and
+  drives a render error, a Route Handler and a Server Action (invoked with the `Next-Action`
+  header); same skip/fail rule. Its `error.tsx` is a Client Component and must never import
+  the logger — the test asserts that at the source level.
 - `test/node/` — lifecycle integration: spawns `node` on fixtures that import the **built**
   `dist/`, so run `npm run build` before `npm test` locally (CI builds before testing; the
   suite skips without `dist/` locally and fails without it when `CI` is set).

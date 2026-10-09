@@ -136,3 +136,45 @@ jobs:
           REQUIRE_NEXT_BUILD_GUARD: '1'
           NEXT_TELEMETRY_DISABLED: '1'
         run: npm run test:next-build
+
+  # The Next example (#21), built and started for real against a local log server: the
+  # evidence that a render, a Route Handler and a Server Action each reach onRequestError and
+  # that withLogging flushes after the response. Separate, parallel, not a required check.
+  next-example:
+    name: next-example
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Detect toolchain
+        id: detect
+        run: |
+          if [ -f package.json ]; then
+            echo "toolchain=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "toolchain=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-node@v6
+        if: steps.detect.outputs.toolchain == 'true'
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            examples/nextjs-app/package-lock.json
+
+      - name: Install and build the package
+        if: steps.detect.outputs.toolchain == 'true'
+        run: npm ci && npm run build
+
+      - name: Install the example
+        if: steps.detect.outputs.toolchain == 'true'
+        run: npm ci --prefix examples/nextjs-app
+
+      - name: Build, start and drive the example
+        if: steps.detect.outputs.toolchain == 'true'
+        env:
+          REQUIRE_NEXT_EXAMPLE: '1'
+          NEXT_TELEMETRY_DISABLED: '1'
+        run: npm run test:next-app

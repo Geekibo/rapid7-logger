@@ -668,9 +668,13 @@ As implemented (#18), `createRequestErrorHandler(log, { message?, flushTimeoutMs
 - The Next entry runs under both `NEXT_RUNTIME` values, so it imports from the core only. Its
   `createLogger` is the core one — no process lifecycle hooks, no ambient trace — and it is built
   like the Edge entry (§4.2) with the same built-in guards (§8.3).
-- The three-surface verification in the issue's done-when (a Server Component, a Route Handler
-  and a Server Action each producing a line with the digest and route type) needs the example
-  app and is recorded on #21.
+- Verified on `examples/nextjs-app` (#21), built and started for real: a Server Component
+  render → `routeType=render` with a digest; a Server Action (JS submission) →
+  `routeType=action` with a digest **equal to the one in the RSC response the client gets**;
+  a Route Handler → `routeType=route` but **no digest — Next assigns none to Route Handler
+  errors**; the `traceparent` id, shared by the `withLogging` lines and the hook line,
+  correlates instead. A no-JS form post of an action is reported by Next as `routeType=render`
+  on `<route>/page`, without a digest.
 
 ### 6.2 Server Actions and Route Handlers
 
@@ -725,9 +729,15 @@ As implemented (#19), `withLogging(log, name, fn, options?)`:
   both builds; a static import would make loading `/next` fail wherever `next` is absent (unit
   tests, Node 15.0 ESM linking); the CJS build lowers it to a `require()` so a consumer's CJS
   test runner resolves it. The ambient `declare module 'next/server'` used to type-check is
-  `unknown`-typed and does not reach `dist/`. Not yet verified on a real Next server: `after()`
-  on both runtimes and the Edge bundler's handling of the dynamic import — recorded for #21/#22,
-  with `options.after` as the no-dynamic-import path.
+  `unknown`-typed and does not reach `dist/`. Verified on the Node runtime of a real
+  `next start` (#21): with the log endpoint holding every POST for 1 s, a `withLogging` route
+  still answers in tens of milliseconds and its lines arrive afterwards — the flush ran through
+  `after()`; the hook's awaited bound flush, by contrast, holds a Route Handler's 500 for about
+  a second, and a render error's 500 is not held at all. Both bundlers resolve the dynamic
+  import at build time; Turbopack also compiles an Edge chunk of `instrumentation.ts` cleanly.
+  The Edge *runtime* remains #22. For a Server Action, `withLogging`'s lines carry a generated
+  trace id while the hook line carries the request's `traceparent` id; for a Route Handler both
+  share the inbound id.
 
 ### 6.3 The Edge runtime
 
@@ -1086,10 +1096,12 @@ rapid7-logger/
 │   ├── contract/        Transport invariants: never throws, flush is bounded
 │   ├── node/            lifecycle integration: spawns node against dist/ (build first)
 │   ├── next-build/      guard.test.ts + fixture/: a real next build proving §6.5 (own CI job)
+│   ├── next-app/        example.test.ts: builds, starts and drives examples/nextjs-app (own CI job)
 │   └── live/            gated integration test (§9.2)
 ├── spike/               phase 0 endpoint measurement script (#4) — not shipped
 ├── examples/
 │   ├── node-basic/      plain Node script, written as a consumer would (#17); run by test/node
+│   ├── nextjs-app/      App Router app: instrumentation.ts, a Server Action, a Route Handler (#21); run by test/next-app
 │   ├── nextjs-app/      instrumentation.ts + a Server Action + a Route Handler
 │   └── nextjs-edge/
 ├── .github/workflows/   ci.yml  release.yml
