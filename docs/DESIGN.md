@@ -410,6 +410,7 @@ Options, as implemented (#6):
 | `flush(timeoutMs = 2000)` | Bounded by a timer regardless of the transport. Never rejects. |
 | `format` | Full line override (§5.3). Its output is still flattened and truncated. Forwarded to the transport by #15. |
 | `maxBytes` | Line byte cap (§5.4). Default 32,767. Forwarded to the transport by #15. |
+| `redact` | On by default (§6.6). `false` disables; `{ keys, patterns, replacement, defaults }` extends or replaces the built-ins. |
 
 `createLogger` itself never throws: a failure inside construction also degrades to console-only.
 
@@ -670,6 +671,32 @@ createLogger({
 Defaults should cover the obvious credential-shaped keys and bearer tokens. Redaction must run
 **before** the formatter, must apply to nested objects, and must be impossible to bypass by
 logging an object instead of a string.
+
+As implemented (#8), `createRedactor` runs in the logger once per event, after the level gate
+and before the queue, so nothing unredacted can be buffered, formatted, handed to a `format`
+override or printed by the console fallback:
+
+- **Keys** match case-insensitively as a substring once `-`, `_` and whitespace are removed, so
+  `dbPassword`, `refresh_token`, `x-api-key` and `set-cookie` all match. Defaults: `password`,
+  `passwd`, `pwd`, `secret`, `token`, `apiKey`, `authorization`, `cookie`, `credential`,
+  `privateKey`. Known false positives: `tokenCount`, `maxTokens`. Deliberately absent: `auth`
+  (hits `author`), `session`, bare `key`, PII terms. A matched key's whole value becomes the
+  replacement, whatever its type. Keys never apply to the message.
+- **Patterns** apply to every string in the event — the message, every context string, and
+  the error's name, message, stack and digest (a stack can embed a URL carrying a token).
+  Defaults: `Bearer <token>` and `Basic <credentials>` (the scheme is kept), and bare JWTs.
+- **Bypasses closed:** an object's `toJSON` is called during redaction and its result walked,
+  so the formatter's `JSON.stringify` never sees one; functions become `[Function]`; `Map`
+  becomes a plain object (keys matched) and `Set` an array; an `Error` in context keeps its
+  shape (so §5.3 still renders `"Name: message"`) with its fields and own properties redacted.
+- **Bounded and total:** cycles become `[Circular]`, depth is capped at 16 (`[MaxDepth]`) and
+  nodes at 10,000 (`[MaxNodes]` for everything after — unwalked input never passes through);
+  a value that throws while being read becomes `[unserializable]`; the redactor never throws,
+  and if it somehow did the logger drops the event rather than leaking it.
+- **Options:** `redact: false` disables it; `keys` and `patterns` extend the defaults;
+  `defaults: false` drops the built-ins; `replacement` defaults to `[redacted]`.
+- The redacted context is a fresh deep copy, so later mutation of a logged object cannot reach
+  the queue (§7.2).
 
 ---
 

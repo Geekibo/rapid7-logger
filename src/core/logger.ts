@@ -1,5 +1,6 @@
 import { ConsoleTransport } from '../transports/console.js';
 import { resolveConfig, resolveLevel } from './config.js';
+import { createRedactor, type Redactor } from './redact.js';
 import { isEnabled } from './levels.js';
 import type {
   InternalErrorHandler,
@@ -33,6 +34,7 @@ interface Shared {
   readonly threshold: Level;
   readonly counters: Counters;
   readonly report: InternalErrorHandler;
+  readonly redact: Redactor;
 }
 
 function errorMessage(value: unknown): string {
@@ -177,10 +179,19 @@ class CoreLogger implements Logger {
       context: { ...this.context, ...context },
       ...(error ? { error } : {}),
     };
+    // Redaction runs here, before anything can buffer, format or print the event (invariant
+    // 9). The redactor is total; if it ever throws anyway, the event is dropped, not leaked.
+    let redacted: LogEvent;
+    try {
+      redacted = this.shared.redact(event);
+    } catch (cause) {
+      this.fail('redaction threw; event dropped', cause);
+      return;
+    }
     // Direct delivery for now; #9 replaces this with the bounded queue. A transport that
     // violates its never-throw contract must still not reach the caller (invariant 3).
     try {
-      this.shared.transport.send(event).catch((cause: unknown) => {
+      this.shared.transport.send(redacted).catch((cause: unknown) => {
         this.fail('transport.send rejected', cause);
       });
     } catch (cause) {
@@ -207,6 +218,8 @@ function resolveTransport(options: LoggerOptions, report: InternalErrorHandler):
   return new ConsoleTransport();
 }
 
+const identity: Redactor = (event) => event;
+
 function rootContext(options: LoggerOptions): LogContext {
   const context: Record<string, unknown> = {};
   if (options.service !== undefined) context.service = options.service;
@@ -222,7 +235,11 @@ export function createLogger(options: LoggerOptions = {}): Logger {
     const { level, problem } = resolveLevel(options.level);
     if (problem) report(new Error(problem));
     const transport = resolveTransport(options, report);
-    return new CoreLogger({ transport, threshold: level, counters, report }, rootContext(options));
+    const redact = options.redact === false ? identity : createRedactor(options.redact ?? {});
+    return new CoreLogger(
+      { transport, threshold: level, counters, report, redact },
+      rootContext(options),
+    );
   } catch (cause) {
     report(
       new Error(`createLogger failed; logging to the console only: ${errorMessage(cause)}`, {
@@ -230,7 +247,13 @@ export function createLogger(options: LoggerOptions = {}): Logger {
       }),
     );
     return new CoreLogger(
-      { transport: new ConsoleTransport(), threshold: 'info', counters, report },
+      {
+        transport: new ConsoleTransport(),
+        threshold: 'info',
+        counters,
+        report,
+        redact: createRedactor(),
+      },
       {},
     );
   }

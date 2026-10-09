@@ -233,3 +233,40 @@ describe('flush', () => {
     ).resolves.toBeUndefined();
   });
 });
+
+describe('redaction in the pipeline (§6.6)', () => {
+  it('is on by default and covers bound and per-call context, keeping traceId', () => {
+    const transport = recording();
+    const log = createLogger({ transport, service: 'svc' }).child({ traceId: 't', token: 'bound' });
+    log.info('Bearer abc.def', { password: 'p', nested: { apiKey: 'k' } });
+    expect(transport.events[0]?.message).toBe('Bearer [redacted]');
+    expect(transport.events[0]?.context).toEqual({
+      service: 'svc',
+      traceId: 't',
+      token: '[redacted]',
+      password: '[redacted]',
+      nested: { apiKey: '[redacted]' },
+    });
+  });
+
+  it('redacts the positional error and can be disabled or extended', () => {
+    const transport = recording();
+    createLogger({ transport }).error('x', new Error('Basic dXNlcg=='));
+    createLogger({ transport, redact: false }).info('x', { password: 'kept' });
+    createLogger({ transport, redact: { keys: ['email'], replacement: '***' } }).info('x', {
+      email: 'e',
+      password: 'p',
+    });
+    expect(transport.events[0]?.error?.message).toBe('Basic [redacted]');
+    expect(transport.events[1]?.context).toEqual({ password: 'kept' });
+    expect(transport.events[2]?.context).toEqual({ email: '***', password: '***' });
+  });
+
+  it('does not throw for junk redact options', () => {
+    const transport = recording();
+    expect(() =>
+      createLogger({ transport, redact: { keys: 'nope' as unknown as string[] } }).info('x'),
+    ).not.toThrow();
+    expect(transport.events).toHaveLength(1);
+  });
+});

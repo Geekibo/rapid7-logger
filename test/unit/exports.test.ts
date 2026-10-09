@@ -6,10 +6,13 @@ import * as pkg from '../../src/index.js';
 describe('the Node entry point', () => {
   it('exports exactly these runtime names', () => {
     expect(Object.keys(pkg).sort()).toEqual([
+      'DEFAULT_REDACT_KEYS',
+      'DEFAULT_REDACT_PATTERNS',
       'LEVELS',
       'LEVEL_MONIKERS',
       'REGIONS',
       'createLogger',
+      'createRedactor',
       'formatEvent',
     ]);
   });
