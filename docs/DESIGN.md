@@ -365,6 +365,9 @@ Notes:
   features — same principle.
 - **`next` is an optional peer**, so plain Node consumers never pull it in.
 - **No `/edge` CJS build** — the Edge runtime is ESM-only.
+- **`./next` is built like `./edge`** (#18): alone and unsplit, `platform: 'neutral'`, with the
+  built-in guard, because it runs under both `NEXT_RUNTIME` values. CJS is kept for the Node
+  side of a Next app.
 - **Types are declared per condition.** In a `type: module` package a `.d.ts` is read as ESM
   types, so a single `types` entry would give CJS consumers (`moduleResolution: node16`) the
   "masquerading as ESM" error. The `require` branch points at `.d.cts`; `@arethetypeswrong/cli`
@@ -603,7 +606,7 @@ import { log } from '@/lib/log';
 export const onRequestError: Instrumentation.onRequestError = async (
   error,      // unknown — narrow before use
   request,    // { path, method, headers }
-  context,    // { routerKind, routePath, routeType, renderSource, revalidateReason, renderType }
+  context,    // { routerKind, routePath, routeType, renderSource?, revalidateReason }
 ) => {
   log.error('Unhandled server error', error, {
     path:       request.path,
@@ -635,6 +638,36 @@ Two caveats to document prominently, because both cause silent gaps:
 2. **The error instance may not be the one thrown.** React can process errors during Server
    Component rendering; `error.digest` is what correlates the server line to what the browser
    saw. Always log the digest.
+
+As implemented (#18), `createRequestErrorHandler(log, { message?, flushTimeoutMs? })` lives in
+`@geekibo/rapid7-logger/next` and returns an `async` function assignable to
+`Instrumentation.onRequestError`:
+
+- **Types are structural, not imported from `next`.** Installing Next as a devDependency drags
+  in React and more (R11); instead the parameter types are declared at least as wide as Next's,
+  verified against the shipped `dist/server/instrumentation/types.d.ts` of 15.0.0, 15.5.0 and
+  16.4.0. They are identical except `routeType`'s fourth member — `'middleware'` (15) became
+  `'proxy'` (16) — so the local type accepts both. **No shipped version has `renderType`**; it
+  appears only in the docs sample, which the comment above previously copied. The type-level
+  assignment to verbatim copies of both Next versions' types is checked by `npm run typecheck`.
+- **Narrowing.** An `Error`, or anything error-shaped, keeps its name, message, stack and
+  digest. Any other object is rendered as JSON and still carries its `digest` when it has one.
+  A primitive has no digest; what exists is logged. The digest is printed as `digest=` by the
+  formatter (§5.3), never duplicated into context.
+- **Context:** `path`, `method`, `routePath`, `routeType`, `routerKind`, plus `renderSource`,
+  `revalidateReason` and `renderType` when they are strings. The inbound `traceparent` header,
+  when valid, stamps `traceId` — so the error line joins the request's trace on the Edge
+  runtime too, where there is no `AsyncLocalStorage` (§6.4).
+- **Then `await log.flush(1500)`.** Next awaits the hook in its own wrapper, but the render
+  path calls it from React's synchronous `onError` and does not hold the response for it, so
+  the bounded flush is the actual guarantee. Never throws or rejects: a hook running during
+  error handling must not add an error.
+- The Next entry runs under both `NEXT_RUNTIME` values, so it imports from the core only. Its
+  `createLogger` is the core one — no process lifecycle hooks, no ambient trace — and it is built
+  like the Edge entry (§4.2) with the same built-in guards (§8.3).
+- The three-surface verification in the issue's done-when (a Server Component, a Route Handler
+  and a Server Action each producing a line with the digest and route type) needs the example
+  app and is recorded on #21.
 
 ### 6.2 Server Actions and Route Handlers
 
@@ -975,6 +1008,7 @@ rapid7-logger/
 │   ├── core/            logger.ts  formatter.ts  queue.ts  redact.ts  levels.ts  config.ts  traceparent.ts  types.ts
 │   ├── transports/      rapid7-webhook.ts  console.ts  memory.ts
 │   ├── node/            lifecycle.ts (process-level registry)  logger.ts (Node createLogger)  trace.ts (AsyncLocalStorage)
+│   ├── next/            request-error.ts (createRequestErrorHandler)  — core imports only
 │   ├── index.ts         Node entry  (re-exports src/node + core; AsyncLocalStorage in #16)
 │   ├── next.ts          Next entry  ('server-only', withLogging, onRequestError, after())
 │   └── edge.ts          Edge entry  (immediate-send)
@@ -1013,9 +1047,10 @@ Beyond the usual, three project-specific gates:
    enough: measured while scaffolding (#5), tsup by default rewrites `node:fs` to a bare `fs`,
    which a `node:`-only grep misses. So it is enforced in three layers: an ESLint
    `no-restricted-imports` ban on every built-in (bare and `node:`) in `src/core`,
-   `src/transports` and `src/edge.ts`; an esbuild plugin in `tsup.config.ts` that fails the
-   Edge build on any built-in (with `removeNodeProtocol: false`, so the prefix survives to be
-   seen); and the CI grep as a last check.
+   `src/transports`, `src/edge.ts`, `src/next.ts` and `src/next/`; an esbuild plugin in
+   `tsup.config.ts` that fails the Edge and Next builds on any built-in (with
+   `removeNodeProtocol: false`, so the prefix survives to be seen); and the CI grep over
+   `dist/edge.js`, `dist/next.js` and `dist/next.cjs` as a last check.
 2. **The public API surface is snapshotted.** An accidental type-level breaking change in a
    logger is painful to discover downstream.
 3. **`send()` never rejects**, asserted against a transport whose `fetch` throws, returns `500`,

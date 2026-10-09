@@ -62,17 +62,24 @@ jobs:
         if: steps.detect.outputs.toolchain == 'true'
         run: npm test
 
-      # Invariant 8 (CLAUDE.md): the edge bundle must run where node builtins do not
-      # exist. A regression here breaks consumers at deploy time, not build time.
+      # Invariant 8 (CLAUDE.md): the edge bundle must run where node builtins do not exist, and
+      # the Next entry runs on the Edge runtime too, so its bundles get the same check. A
+      # regression here breaks consumers at deploy time, not build time.
       - name: Edge bundle must not import node builtins
         if: steps.detect.outputs.toolchain == 'true'
         run: |
-          if [ ! -f dist/edge.js ]; then
-            echo "dist/edge.js missing — skipping (edge entry lands in phase 5)"
-            exit 0
-          fi
-          if grep -nE "(require\(|from[[:space:]]*)['\"]node:" dist/edge.js; then
-            echo "::error::dist/edge.js imports a node: builtin — see CLAUDE.md invariant 8"
-            exit 1
-          fi
-          echo "clean"
+          status=0
+          for bundle in dist/edge.js dist/next.js dist/next.cjs; do
+            if [ ! -f "$bundle" ]; then
+              echo "::error::$bundle missing — the build should have produced it"
+              status=1
+              continue
+            fi
+            if grep -nE "(require\(|from[[:space:]]*)['\"]node:" "$bundle"; then
+              echo "::error::$bundle imports a node: builtin — see CLAUDE.md invariant 8"
+              status=1
+            else
+              echo "$bundle clean"
+            fi
+          done
+          exit $status

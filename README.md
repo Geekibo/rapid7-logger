@@ -57,12 +57,20 @@ await log.flush(2000);                                // bounded, explicit
 ### Next.js
 
 ```ts
-// instrumentation.ts
-import { createRequestErrorHandler } from '@geekibo/rapid7-logger/next';
-import { log } from '@/lib/log';
+// instrumentation.ts — runs under both NEXT_RUNTIME values
+import type { Instrumentation } from 'next';
+import { createLogger, createRequestErrorHandler } from '@geekibo/rapid7-logger/next';
 
-export const onRequestError = createRequestErrorHandler(log);
+const log = createLogger({ token: process.env.RAPID7_TOKEN, service: 'my-app' });
+
+export const onRequestError: Instrumentation.onRequestError = createRequestErrorHandler(log);
 ```
+
+One `error` line per escaped error, carrying the path, method, route type and — always — the
+`digest` that correlates it with what the browser saw, then a bounded flush before the
+runtime can freeze. It only sees errors that *escape*: it is a safety net, not a substitute for
+using the logger at call sites. The `/next` entry imports nothing Node-specific, so it works on
+the Edge runtime; its `createLogger` has no process lifecycle hooks and no ambient trace.
 
 ```ts
 // a Server Action
