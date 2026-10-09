@@ -51,10 +51,12 @@ These are correctness, not style. A change that breaks one of these is wrong eve
    The Next entry point must `import 'server-only'` so a Client Component import is a *build*
    error (§6.5).
 8. **The core imports no `node:*` modules.** It must run on Edge and in Workers. Node-specific
-   code (`process.on`, `AsyncLocalStorage`) lives in the Node entry point only. Enforced three
-   ways (§8.3): ESLint bans built-in imports in `src/core`, `src/transports` and `src/edge.ts`;
-   a plugin in `tsup.config.ts` fails the Edge build on one; CI greps `dist/edge.js`. Keep
-   `removeNodeProtocol: false` on the Edge build — tsup otherwise rewrites `node:fs` to `fs`.
+   code (`process.on`, `AsyncLocalStorage`) lives in the Node entry point only. The Next entry
+   runs on Edge too, so it gets the same rules. Enforced three ways (§8.3): ESLint bans
+   built-in imports in `src/core`, `src/transports`, `src/edge.ts`, `src/next.ts` and
+   `src/next/`; a plugin in `tsup.config.ts` fails the Edge and Next builds on one; CI greps
+   `dist/edge.js`, `dist/next.js` and `dist/next.cjs`. Keep `removeNodeProtocol: false` on
+   those builds — tsup otherwise rewrites `node:fs` to `fs`.
 9. **Never log a credential.** Redaction (§6.6) runs *before* the formatter and applies to nested
    objects.
 
@@ -93,8 +95,9 @@ token must stub `fetch`.
 The Node entry (#15) wraps the core `createLogger` with lifecycle flush hooks under
 `src/node/` and adds `close()`; correlation (#16) is a core `contextProvider` seam plus pure
 W3C helpers in `src/core/traceparent.ts` and an `AsyncLocalStorage` store in
-`src/node/trace.ts` (`withTrace`, `outboundHeaders`); `src/edge.ts` and `src/next.ts` are still stubs and must import
-from the core, never from `src/index.ts` or `src/node/`. Work proceeds phase by phase (§14).
+`src/node/trace.ts` (`withTrace`, `outboundHeaders`); `src/next.ts` (#18) exports the core `createLogger` and `createRequestErrorHandler`
+(`src/next/request-error.ts`, structural Next types — `next` is not installed); `src/edge.ts`
+is still a stub. Both must import from the core, never from `src/index.ts` or `src/node/`. Work proceeds phase by phase (§14).
 The target layout is §8.1 and the `exports` map is §4.2 — follow them rather than inventing a
 structure.
 

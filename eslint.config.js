@@ -32,8 +32,8 @@ export default tseslint.config(
     rules: { 'no-unused-vars': ['error', { ignoreRestSiblings: true }] },
   },
   {
-    // Invariant 8: the core and the Edge entry run where Node built-ins do not exist.
-    files: ['src/core/**', 'src/transports/**', 'src/edge.ts'],
+    // Invariant 8: the core, the Edge entry and the Next entry run where Node built-ins do not exist.
+    files: ['src/core/**', 'src/transports/**', 'src/edge.ts', 'src/next.ts', 'src/next/**'],
     rules: {
       'no-restricted-imports': [
         'error',
@@ -41,7 +41,7 @@ export default tseslint.config(
           paths: nodeBuiltins.map((name) => ({
             name,
             message:
-              'The core and Edge entry must not import Node built-ins (CLAUDE.md invariant 8).',
+              'The core, Edge and Next entries must not import Node built-ins (CLAUDE.md invariant 8).',
           })),
         },
       ],
