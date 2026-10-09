@@ -6,6 +6,23 @@ export {
   type NodeLogger,
   type NodeLoggerOptions,
 } from './node/logger.js';
+export {
+  currentTrace,
+  currentTraceId,
+  currentTraceparent,
+  outboundHeaders,
+  withTrace,
+} from './node/trace.js';
+export {
+  childOf,
+  formatTraceparent,
+  generateTraceContext,
+  generateTraceparent,
+  parseTraceparent,
+  readTraceparent,
+  type TraceContext,
+  type TraceSource,
+} from './core/traceparent.js';
 export { formatEvent } from './core/formatter.js';
 export {
   ConsoleTransport,

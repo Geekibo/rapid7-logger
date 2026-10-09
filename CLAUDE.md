@@ -91,7 +91,9 @@ retry policy (#12), anything else degrades to the console. `composeLogger` is th
 seam Edge (#22) uses to swap in immediate send. Tests that create a logger with a valid-shaped
 token must stub `fetch`.
 The Node entry (#15) wraps the core `createLogger` with lifecycle flush hooks under
-`src/node/` and adds `close()`; `src/edge.ts` and `src/next.ts` are still stubs and must import
+`src/node/` and adds `close()`; correlation (#16) is a core `contextProvider` seam plus pure
+W3C helpers in `src/core/traceparent.ts` and an `AsyncLocalStorage` store in
+`src/node/trace.ts` (`withTrace`, `outboundHeaders`); `src/edge.ts` and `src/next.ts` are still stubs and must import
 from the core, never from `src/index.ts` or `src/node/`. Work proceeds phase by phase (§14).
 The target layout is §8.1 and the `exports` map is §4.2 — follow them rather than inventing a
 structure.

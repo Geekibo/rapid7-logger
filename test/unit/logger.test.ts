@@ -329,3 +329,44 @@ describe('the queue in the pipeline (§7.2)', () => {
     expect(seen).toEqual(['direct']);
   });
 });
+
+describe('contextProvider (§6.4)', () => {
+  it('merges per-call > ambient > bound, and children inherit it', async () => {
+    const transport = recording();
+    const log = createLogger({
+      transport,
+      contextProvider: () => ({ traceId: 'ambient', a: 'amb' }),
+    });
+    const child = log.child({ traceId: 'bound', b: 'bound' });
+    child.info('x', { a: 'call' });
+    await drain();
+    expect(transport.events[0]?.context).toEqual({ traceId: 'ambient', a: 'call', b: 'bound' });
+  });
+
+  it('a throwing or non-object provider is tolerated: the event ships without ambient keys', async () => {
+    const onInternalError = vi.fn();
+    const transport = recording();
+    const log = createLogger({
+      transport,
+      onInternalError,
+      contextProvider: () => {
+        throw new Error('provider broke');
+      },
+    });
+    expect(() => log.info('x', { a: 1 })).not.toThrow();
+    createLogger({ transport, contextProvider: () => 'nope' as unknown as undefined }).info('y');
+    await drain();
+    expect(transport.events[0]?.context).toEqual({ a: 1 });
+    expect(transport.events[1]?.context).toEqual({});
+    expect(onInternalError).toHaveBeenCalledOnce();
+    expect(log.stats().failed).toBe(0);
+  });
+
+  it('is not consulted below the threshold', () => {
+    const provider = vi.fn(() => ({}));
+    createLogger({ transport: recording(), contextProvider: provider, level: 'warn' }).info(
+      'hidden',
+    );
+    expect(provider).not.toHaveBeenCalled();
+  });
+});

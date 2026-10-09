@@ -88,3 +88,24 @@ describe('the Node createLogger', () => {
     expect(process.listenerCount('SIGTERM')).toBe(before);
   });
 });
+
+describe('the ambient trace provider', () => {
+  it('is wired by default and replaced by an explicit contextProvider', async () => {
+    const { lifecycle } = fakeLifecycle();
+    const a = new MemoryTransport();
+    const b = new MemoryTransport();
+    const { withTrace } = await import('../../src/node/trace.js');
+    const defaults = createNodeLogger({ transport: a }, lifecycle);
+    const explicit = createNodeLogger(
+      { transport: b, contextProvider: () => ({ k: 'v' }) },
+      lifecycle,
+    );
+    withTrace('00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01', () => {
+      defaults.info('x');
+      explicit.info('y');
+    });
+    await Promise.all([defaults.flush(1000), explicit.flush(1000)]);
+    expect(a.events[0]?.context).toEqual({ traceId: 'a'.repeat(32) });
+    expect(b.events[0]?.context).toEqual({ k: 'v' });
+  });
+});
