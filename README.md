@@ -82,7 +82,7 @@ cannot support it.
 
 | | |
 |---|---|
-| **Delivery** | **At-least-once.** Up to 3 attempts on `5xx`/`408`/`429` and network errors. The endpoint has no dedup, so a lost acknowledgement **can produce a duplicate** — relevant if anything downstream counts events. |
+| **Delivery** | **At-least-once.** Up to 3 attempts on `5xx`/`408`/`429` and network errors (including a per-attempt 10 s timeout), backing off 200 ms then 400 ms, or as long as a `Retry-After` asks (capped at 30 s). Other `4xx` are not retried. The endpoint has no dedup, so a lost acknowledgement **can produce a duplicate** — relevant if anything downstream counts events. |
 | **Never throws** | `send()` never throws and never rejects. A logging failure must never fail a user's request. |
 | **Bounded** | Queue of 10,000; overflow **drops** and increments a counter. It will never block your application. |
 | **Bounded flush** | `flush(timeoutMs)` returns when the timeout elapses, drained or not. No hung shutdowns. |

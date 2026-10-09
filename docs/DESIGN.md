@@ -774,8 +774,18 @@ first.
 Improvement over the .NET original: **honour `Retry-After`** on a `429` when present, capped,
 rather than using the fixed backoff.
 
-As implemented so far (#11): the transport makes a **single attempt** with a 10 s timeout and
-reports the result through `SendOutcome` (§4.3); the retry policy above arrives with #12. This path is defensive: no `429` has been observed from the
+As implemented (#12): the loop lives in `Rapid7WebhookTransport.send()`. The 10 s timeout is
+**per attempt**; a timeout is a transient failure and retries like a network error. The wait
+before attempt *n* is `backoffMs × (n − 1)` (200 ms, then 400 ms). On a `429`, and on a `503`
+since servers send it there too, a `Retry-After` header — integer seconds or an HTTP-date — is
+honoured instead of the backoff, capped at 30 s (`retryAfterCapMs`); an unparseable value
+falls back to the backoff. The outcome reports `retries = attempts − 1` and the **last**
+error, so `stats()` shows `retried` and `failed` (§7.4). `maxAttempts`, `backoffMs` and
+`retryAfterCapMs` are transport options, not `LoggerOptions`. No `429` has ever been observed
+from the endpoint (§2.1), so the `Retry-After` path is unit-tested only. Because a well-formed
+wrong token is accepted with `204` (§2.6), the "do not retry" row only ever fires for a
+malformed token (`404`) or, in theory, an oversized body (`413`) that the formatter's cap
+makes impossible. This path is defensive: no `429` has been observed from the
 endpoint (§2.1, none up to ~164 req/s), so it is untested against the real thing.
 
 The endpoint has no idempotency or dedup, so a POST that is ingested but whose acknowledgement

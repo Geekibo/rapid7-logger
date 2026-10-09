@@ -40,9 +40,9 @@ afterEach(() => {
 describe('the request (§2.1)', () => {
   it('posts one event per request, text/plain, body = formatted line + \\n', async () => {
     const { fn, calls } = fakeFetch();
-    const transport = new Rapid7WebhookTransport({ token: TOKEN, fetch: fn });
+    const transport = new Rapid7WebhookTransport({ token: TOKEN, maxAttempts: 1, fetch: fn });
     const event = ev({ context: { traceId: 'abc', a: 1 } });
-    await expect(transport.send(event)).resolves.toEqual({ delivered: true });
+    await expect(transport.send(event)).resolves.toEqual({ delivered: true, retries: 0 });
     expect(calls).toHaveLength(1);
     const { url, init } = calls[0] as Call;
     expect(url).toBe(`https://eu.webhook.logs.insight.rapid7.com/v1/noformat/${TOKEN}`);
@@ -58,20 +58,27 @@ describe('the request (§2.1)', () => {
 
   it.each(['eu', 'us', 'au', 'ca', 'jp'])('targets the %s subdomain', async (region) => {
     const { fn, calls } = fakeFetch();
-    await new Rapid7WebhookTransport({ token: TOKEN, region, fetch: fn }).send(ev());
+    await new Rapid7WebhookTransport({ token: TOKEN, maxAttempts: 1, region, fetch: fn }).send(
+      ev(),
+    );
     expect(calls[0]?.url.startsWith(`https://${region}.webhook.`)).toBe(true);
   });
 
   it('normalises the region and defaults to eu', async () => {
     const { fn, calls } = fakeFetch();
-    await new Rapid7WebhookTransport({ token: TOKEN, region: ' US ', fetch: fn }).send(ev());
-    await new Rapid7WebhookTransport({ token: TOKEN, fetch: fn }).send(ev());
+    await new Rapid7WebhookTransport({
+      token: TOKEN,
+      maxAttempts: 1,
+      region: ' US ',
+      fetch: fn,
+    }).send(ev());
+    await new Rapid7WebhookTransport({ token: TOKEN, maxAttempts: 1, fetch: fn }).send(ev());
     expect(calls.map((c) => c.url.slice(8, 10))).toEqual(['us', 'eu']);
   });
 
   it('never puts an interior newline in the body, and exactly one at the end (invariant 2)', async () => {
     const { fn, calls } = fakeFetch();
-    const transport = new Rapid7WebhookTransport({ token: TOKEN, fetch: fn });
+    const transport = new Rapid7WebhookTransport({ token: TOKEN, maxAttempts: 1, fetch: fn });
     await transport.send(
       ev({
         message: 'line1\nline2\r\nline3',
@@ -86,7 +93,7 @@ describe('the request (§2.1)', () => {
 
   it('relies on the formatter cap and does not re-truncate', async () => {
     const { fn, calls } = fakeFetch();
-    await new Rapid7WebhookTransport({ token: TOKEN, fetch: fn }).send(
+    await new Rapid7WebhookTransport({ token: TOKEN, maxAttempts: 1, fetch: fn }).send(
       ev({ message: 'x'.repeat(100_000) }),
     );
     const body = calls[0]?.init.body as string;
@@ -98,6 +105,7 @@ describe('the request (§2.1)', () => {
     const { fn, calls } = fakeFetch();
     await new Rapid7WebhookTransport({
       token: TOKEN,
+      maxAttempts: 1,
       fetch: fn,
       format: (e) => `custom ${e.message}`,
       maxBytes: 128,
@@ -108,22 +116,24 @@ describe('the request (§2.1)', () => {
   });
 });
 
-describe('outcomes (§7.1, single attempt)', () => {
+describe('outcomes (single attempt; the retry policy is tested separately)', () => {
   it.each([200, 204])('treats %i as delivered', async (status) => {
     const { fn } = fakeFetch(status);
     await expect(
-      new Rapid7WebhookTransport({ token: TOKEN, fetch: fn }).send(ev()),
+      new Rapid7WebhookTransport({ token: TOKEN, maxAttempts: 1, fetch: fn }).send(ev()),
     ).resolves.toEqual({
       delivered: true,
+      retries: 0,
     });
   });
 
   it.each([401, 404, 413, 429, 500])('reports HTTP %i as not delivered', async (status) => {
     const { fn } = fakeFetch(status, 'some body');
     await expect(
-      new Rapid7WebhookTransport({ token: TOKEN, fetch: fn }).send(ev()),
+      new Rapid7WebhookTransport({ token: TOKEN, maxAttempts: 1, fetch: fn }).send(ev()),
     ).resolves.toEqual({
       delivered: false,
+      retries: 0,
       error: `HTTP ${status}`,
     });
   });
@@ -131,7 +141,7 @@ describe('outcomes (§7.1, single attempt)', () => {
   it('drains the response body so the connection can be reused', async () => {
     const response = new Response('error details', { status: 500 });
     const fn = (() => Promise.resolve(response)) as unknown as typeof fetch;
-    await new Rapid7WebhookTransport({ token: TOKEN, fetch: fn }).send(ev());
+    await new Rapid7WebhookTransport({ token: TOKEN, maxAttempts: 1, fetch: fn }).send(ev());
     expect(response.bodyUsed).toBe(true);
   });
 
@@ -141,9 +151,10 @@ describe('outcomes (§7.1, single attempt)', () => {
         Object.assign(new TypeError('fetch failed'), { cause: { code: 'ENOTFOUND' } }),
       )) as unknown as typeof fetch;
     await expect(
-      new Rapid7WebhookTransport({ token: TOKEN, fetch: fn }).send(ev()),
+      new Rapid7WebhookTransport({ token: TOKEN, maxAttempts: 1, fetch: fn }).send(ev()),
     ).resolves.toEqual({
       delivered: false,
+      retries: 0,
       error: 'ENOTFOUND',
     });
   });
@@ -153,21 +164,25 @@ describe('outcomes (§7.1, single attempt)', () => {
       throw new Error('sync boom');
     }) as unknown as typeof fetch;
     await expect(
-      new Rapid7WebhookTransport({ token: TOKEN, fetch: throwing }).send(ev()),
+      new Rapid7WebhookTransport({ token: TOKEN, maxAttempts: 1, fetch: throwing }).send(ev()),
     ).resolves.toEqual({
       delivered: false,
+      retries: 0,
       error: 'Error: sync boom',
     });
 
     vi.stubGlobal('fetch', undefined);
-    await expect(new Rapid7WebhookTransport({ token: TOKEN }).send(ev())).resolves.toMatchObject({
+    await expect(
+      new Rapid7WebhookTransport({ token: TOKEN, maxAttempts: 1 }).send(ev()),
+    ).resolves.toMatchObject({
       delivered: false,
+      retries: 0,
       error: expect.stringMatching(/fetch is not available/) as string,
     });
 
     const malformed = (() => Promise.resolve({} as Response)) as unknown as typeof fetch;
     await expect(
-      new Rapid7WebhookTransport({ token: TOKEN, fetch: malformed }).send(ev()),
+      new Rapid7WebhookTransport({ token: TOKEN, maxAttempts: 1, fetch: malformed }).send(ev()),
     ).resolves.toMatchObject({
       delivered: false,
     });
@@ -178,22 +193,23 @@ describe('outcomes (§7.1, single attempt)', () => {
         text: () => Promise.reject(new Error('no body')),
       } as unknown as Response)) as unknown as typeof fetch;
     await expect(
-      new Rapid7WebhookTransport({ token: TOKEN, fetch: badText }).send(ev()),
+      new Rapid7WebhookTransport({ token: TOKEN, maxAttempts: 1, fetch: badText }).send(ev()),
     ).resolves.toEqual({
       delivered: true,
+      retries: 0,
     });
   });
 
   it('uses the global fetch when none is injected', async () => {
     const { fn, calls } = fakeFetch();
     vi.stubGlobal('fetch', fn);
-    await new Rapid7WebhookTransport({ token: TOKEN }).send(ev());
+    await new Rapid7WebhookTransport({ token: TOKEN, maxAttempts: 1 }).send(ev());
     expect(calls).toHaveLength(1);
   });
 
   it('flushes immediately', async () => {
     await expect(
-      new Rapid7WebhookTransport({ token: TOKEN, fetch: fakeFetch().fn }).flush(10),
+      new Rapid7WebhookTransport({ token: TOKEN, maxAttempts: 1, fetch: fakeFetch().fn }).flush(10),
     ).resolves.toBeUndefined();
   });
 });
@@ -212,25 +228,40 @@ describe('the timeout', () => {
   it('aborts after 10 s by default', async () => {
     vi.useFakeTimers();
     const { fn, signal } = hanging();
-    const pending = new Rapid7WebhookTransport({ token: TOKEN, fetch: fn }).send(ev());
+    const pending = new Rapid7WebhookTransport({ token: TOKEN, maxAttempts: 1, fetch: fn }).send(
+      ev(),
+    );
     await vi.advanceTimersByTimeAsync(DEFAULT_REQUEST_TIMEOUT_MS - 1);
     expect(signal()?.aborted).toBe(false);
     await vi.advanceTimersByTimeAsync(1);
     expect(signal()?.aborted).toBe(true);
-    await expect(pending).resolves.toEqual({ delivered: false, error: 'timeout after 10000ms' });
+    await expect(pending).resolves.toEqual({
+      delivered: false,
+      retries: 0,
+      error: 'timeout after 10000ms',
+    });
   });
 
   it('honours timeoutMs and leaves no timer behind after a successful send', async () => {
     vi.useFakeTimers();
     const { fn, signal } = hanging();
-    const pending = new Rapid7WebhookTransport({ token: TOKEN, fetch: fn, timeoutMs: 250 }).send(
-      ev(),
-    );
+    const pending = new Rapid7WebhookTransport({
+      token: TOKEN,
+      maxAttempts: 1,
+      fetch: fn,
+      timeoutMs: 250,
+    }).send(ev());
     await vi.advanceTimersByTimeAsync(250);
     expect(signal()?.aborted).toBe(true);
-    await expect(pending).resolves.toEqual({ delivered: false, error: 'timeout after 250ms' });
+    await expect(pending).resolves.toEqual({
+      delivered: false,
+      retries: 0,
+      error: 'timeout after 250ms',
+    });
 
-    await new Rapid7WebhookTransport({ token: TOKEN, fetch: fakeFetch().fn }).send(ev());
+    await new Rapid7WebhookTransport({ token: TOKEN, maxAttempts: 1, fetch: fakeFetch().fn }).send(
+      ev(),
+    );
     expect(vi.getTimerCount()).toBe(0);
   });
 });
@@ -242,21 +273,29 @@ describe('the credential never leaks (invariant 9)', () => {
     expect(() => new Rapid7WebhookTransport({ token: 'hunter2-not-a-guid' })).not.toThrow(
       /hunter2/,
     );
-    expect(() => new Rapid7WebhookTransport({ token: TOKEN, region: 'mars' })).toThrow(
-      /region "mars"/,
-    );
+    expect(
+      () => new Rapid7WebhookTransport({ token: TOKEN, maxAttempts: 1, region: 'mars' }),
+    ).toThrow(/region "mars"/);
   });
 
   it('does not appear in any outcome, even when fetch puts the URL in its error', async () => {
     const leaky = ((url: string) =>
       Promise.reject(new Error(`request to ${url} failed`))) as unknown as typeof fetch;
-    const outcome = await new Rapid7WebhookTransport({ token: TOKEN, fetch: leaky }).send(ev());
+    const outcome = await new Rapid7WebhookTransport({
+      token: TOKEN,
+      maxAttempts: 1,
+      fetch: leaky,
+    }).send(ev());
     expect(JSON.stringify(outcome)).not.toContain(TOKEN);
     expect(outcome.error).toContain('<token>');
   });
 
   it('is not reachable through enumeration or serialisation', () => {
-    const transport = new Rapid7WebhookTransport({ token: TOKEN, fetch: fakeFetch().fn });
+    const transport = new Rapid7WebhookTransport({
+      token: TOKEN,
+      maxAttempts: 1,
+      fetch: fakeFetch().fn,
+    });
     expect(JSON.stringify(transport)).not.toContain(TOKEN);
     expect(Object.keys(transport)).toEqual([]);
     expect(Object.getOwnPropertyNames(transport)).toEqual([]);
