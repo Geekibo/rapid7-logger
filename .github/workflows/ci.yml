@@ -21,6 +21,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # `changeset status --since` needs the merge base
 
       - name: Detect toolchain
         id: detect
@@ -50,6 +52,13 @@ jobs:
       - name: Lint
         if: steps.detect.outputs.toolchain == 'true'
         run: npm run lint
+
+      # Every user-visible change needs a changeset (DESIGN §10.4). Scoped to src/ by
+      # .changeset/config.json's changedFilePatterns, so docs- and test-only PRs pass; a src/
+      # change that is not user-visible takes `npx changeset --empty`.
+      - name: Changeset present for src/ changes
+        if: steps.detect.outputs.toolchain == 'true' && github.event_name == 'pull_request' && !startsWith(github.head_ref, 'changeset-release/')
+        run: npx changeset status --since=origin/main
 
       - name: Build
         if: steps.detect.outputs.toolchain == 'true'
