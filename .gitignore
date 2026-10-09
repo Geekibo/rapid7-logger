@@ -10,3 +10,5 @@ test/next-build/fixture/.next/
 test/next-build/fixture/next-env.d.ts
 examples/nextjs-app/.next/
 examples/nextjs-app/next-env.d.ts
+# Claude Code local settings (auto mode etc.) — machine-specific, never committed
+.claude/settings.local.json

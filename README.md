@@ -2,11 +2,19 @@
 
 Reliable **Rapid7 InsightOps** logging for **Node.js** and **Next.js**.
 
-> ### ⚠️ Pre-release — not yet published
-> This repository currently contains the **design** and the issue backlog. There is no
-> publishable package yet, and `npm install @geekibo/rapid7-logger` will not work until `0.1.0`
-> ships. Follow [the issues](https://github.com/Geekibo/rapid7-logger/issues) for progress.
-> The full design lives in **[docs/DESIGN.md](docs/DESIGN.md)**.
+```sh
+npm install @geekibo/rapid7-logger
+```
+
+Node 20.9 or later. Zero runtime dependencies; `next` is an optional peer. ESM and CommonJS
+for the Node and Next entry points, ESM only for `/edge`. Published from CI through npm's OIDC
+trusted publishing with provenance — there is no publish token anywhere in this repository.
+The full design, including everything measured about the endpoint, lives in
+**[docs/DESIGN.md](docs/DESIGN.md)**.
+
+> **`0.x`:** the delivery contract below is the promise; `1.0.0` waits until it has held under
+> real traffic for a sustained period (§10.5). The `Transport` interface and the `format`
+> callback are the surfaces most likely to change before then.
 
 ---
 
@@ -269,13 +277,13 @@ additive change rather than a rewrite.
 
 Work is tracked as issues, phased. [§14](docs/DESIGN.md#14-suggested-phasing) has the detail.
 
-| Phase | |
-|---|---|
-| 0 | Verify the endpoint contract from Node — **gates everything else** |
-| 1–2 | Core (formatter, redaction, bounded queue) and the webhook transport |
-| 3–5 | Node, Next.js and Edge entry points |
-| 6–7 | Repo hardening, then `0.1.0` to npm |
-| 8–9 | Real-world shakedown, then `1.0.0` |
+| Phase | | |
+|---|---|---|
+| 0 | Verify the endpoint contract from Node — **gates everything else** | done, measured |
+| 1–2 | Core (formatter, redaction, bounded queue) and the webhook transport | done |
+| 3–5 | Node, Next.js and Edge entry points | done |
+| 6–7 | Repo hardening, then `0.1.0` to npm | `0.1.0` published |
+| 8–9 | Real-world shakedown, then `1.0.0` | next |
 
 Phase 0 exists because every surprising fact in §2 was found by posting to the endpoint and
 looking, and none could have been deduced from the documentation. Measure the thing; don't reason
