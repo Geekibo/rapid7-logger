@@ -7,3 +7,4 @@ dist/
 coverage/
 # next build rewrites this file with its own settings; Next owns its formatting.
 test/next-build/fixture/tsconfig.json
+examples/nextjs-app/tsconfig.json

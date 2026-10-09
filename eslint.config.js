@@ -11,7 +11,15 @@ const nodeBuiltins = builtinModules.flatMap((name) =>
 );
 
 export default tseslint.config(
-  { ignores: ['dist/', 'coverage/', 'node_modules/', 'test/next-build/fixture/'] },
+  {
+    ignores: [
+      'dist/',
+      'coverage/',
+      'node_modules/',
+      'test/next-build/fixture/',
+      'examples/nextjs-app/',
+    ],
+  },
   js.configs.recommended,
   {
     files: ['**/*.ts'],

@@ -137,6 +137,9 @@ The trace lives in `AsyncLocalStorage`, which the Edge runtime lacks: there, pas
 explicitly — `log.child({ traceId })` or a per-call `{ traceId }` — or wire a `contextProvider`
 of your own.
 
+A complete App Router app — `instrumentation.ts`, a Server Action, a Route Handler, each with a
+deliberate error and what it produces — is in [`examples/nextjs-app`](examples/nextjs-app).
+
 ## The token never reaches the browser
 
 The ingestion token is a **write credential**: anyone holding it can write anything into your

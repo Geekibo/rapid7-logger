@@ -9,7 +9,7 @@ export default defineConfig({
   },
   test: {
     include: ['test/**/*.test.ts'],
-    exclude: ['**/node_modules/**', 'test/next-build/fixture/**'],
+    exclude: ['**/node_modules/**', 'test/next-build/fixture/**', 'examples/**'],
     environment: 'node',
   },
 });

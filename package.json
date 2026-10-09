@@ -55,7 +55,8 @@
     "test": "vitest run",
     "prebuild": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "build": "tsup",
-    "test:next-build": "vitest run test/next-build"
+    "test:next-build": "vitest run test/next-build",
+    "test:next-app": "vitest run test/next-app"
   },
   "peerDependencies": {
     "next": ">=15.0.0",
