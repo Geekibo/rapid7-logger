@@ -1,4 +1,5 @@
 import { ConsoleTransport } from '../transports/console.js';
+import { Rapid7WebhookTransport } from '../transports/rapid7-webhook.js';
 import { resolveConfig, resolveLevel, resolveQueueOptions } from './config.js';
 import { createQueue, type Counters, type Dispatcher, type QueueDeps } from './queue.js';
 import { createRedactor, type Redactor } from './redact.js';
@@ -214,12 +215,15 @@ function resolveTransport(options: LoggerOptions, report: InternalErrorHandler):
   const config = resolveConfig(options.token, options.region);
   const formatting = { format: options.format, maxBytes: options.maxBytes };
   if (!config.ok) {
-    report(new Error(config.problem));
+    report(new Error(`${config.problem}; logging to the console only`));
     return new ConsoleTransport(formatting);
   }
-  // A valid token and region. The webhook transport (#11) is wired in here by #15; until then
-  // a configured logger also prints to the console, without a warning.
-  return new ConsoleTransport(formatting);
+  return new Rapid7WebhookTransport({
+    ...formatting,
+    token: config.token,
+    region: config.region,
+    fetch: options.fetch,
+  });
 }
 
 const identity: Redactor = (event) => event;

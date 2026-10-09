@@ -86,9 +86,10 @@ config validation, `createLogger` (#6), the formatter (#7, `formatEvent`/`create
 not yet called by a transport), redaction (#8, on by default, runs in `emit` before
 delivery) and the bounded queue (#9, `src/core/queue.ts`, owns all six counters;
 `Transport.send` may resolve a `SendOutcome`). `ConsoleTransport` and `MemoryTransport` (#10, `src/transports/`) render through the
-formatter. `createLogger` composes the queue over the `ConsoleTransport` until the webhook
-transport (#11, wired by #15) lands; `composeLogger` is the
-internal seam Edge (#22) uses to swap in immediate send.
+formatter. `Rapid7WebhookTransport` (#11) is wired in: a valid token posts to Rapid7 (single
+attempt until #12), anything else degrades to the console. `composeLogger` is the internal
+seam Edge (#22) uses to swap in immediate send. Tests that create a logger with a valid-shaped
+token must stub `fetch`.
 `src/next.ts` and `src/edge.ts` are still stubs. Work proceeds phase by phase (§14). The target layout is §8.1 and the
 `exports` map is §4.2 — follow them rather than inventing a structure.
 

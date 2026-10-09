@@ -8,6 +8,10 @@ export {
 } from './transports/console.js';
 export { MemoryTransport, type MemoryTransportOptions } from './transports/memory.js';
 export {
+  Rapid7WebhookTransport,
+  type Rapid7WebhookTransportOptions,
+} from './transports/rapid7-webhook.js';
+export {
   createRedactor,
   DEFAULT_REDACT_KEYS,
   DEFAULT_REDACT_PATTERNS,
