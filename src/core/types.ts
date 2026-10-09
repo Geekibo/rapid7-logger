@@ -1,0 +1,106 @@
+// The core's public types (DESIGN §4.3, §5.1, §5.2, §7.4). Runtime-agnostic: nothing here may
+// reference a Node or browser type.
+
+export type Level = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal';
+
+export type Region = 'eu' | 'us' | 'au' | 'ca' | 'jp';
+
+export type LogContext = Readonly<Record<string, unknown>>;
+
+/** The normalised form of the positional `Error` argument (§5.2). */
+export interface LogErrorInfo {
+  readonly name: string;
+  readonly message: string;
+  readonly stack?: string;
+  /** Next.js attaches a digest to errors thrown from Server Components and Actions (§6.1). */
+  readonly digest?: string;
+}
+
+// LogEvent and Transport are the seam between the core and any backend (§4.3). Keep them exactly
+// as the design states them: a future transport must be additive, not a rewrite.
+
+export interface LogEvent {
+  readonly timestamp: Date;
+  readonly level: Level;
+  readonly message: string;
+  readonly context: LogContext;
+  readonly error?: LogErrorInfo;
+}
+
+export interface Transport {
+  /** Deliver one event. MUST NOT throw. MUST resolve even on permanent failure. */
+  send(event: LogEvent): Promise<void>;
+  /** Best-effort drain of anything buffered inside the transport. */
+  flush(timeoutMs?: number): Promise<void>;
+}
+
+/** What the logger can report about itself (§7.4). */
+export interface LoggerStats {
+  readonly queued: number;
+  readonly sent: number;
+  readonly dropped: number;
+  readonly failed: number;
+  readonly retried: number;
+  readonly lastError?: string;
+}
+
+/** Receives the logger's own failures. The default is one rate-limited `console.warn`. */
+export type InternalErrorHandler = (error: Error) => void;
+
+/** Redaction options (§6.6). Declared here; implemented in #8. */
+export interface RedactOptions {
+  readonly keys?: readonly string[];
+  readonly patterns?: readonly RegExp[];
+  readonly replacement?: string;
+}
+
+// `Level | (string & {})` keeps autocomplete for the known values while accepting the plain
+// string an environment variable gives you. Unknown values are validated at construction.
+export interface LoggerOptions {
+  /** The log's ingestion token. Absent, empty or malformed ⇒ console-only, one warning, no throw. */
+  readonly token?: string;
+  /** Default `eu`. Unknown ⇒ console-only, one warning. */
+  readonly region?: Region | (string & {});
+  /** Stamped on every event as `service=…`. */
+  readonly service?: string;
+  /** Stamped on every event as `env=…`. */
+  readonly env?: string;
+  /** Minimum level to emit. Default `info`. Unknown ⇒ `info`, one warning. */
+  readonly level?: Level | (string & {});
+  /** Bypass token resolution and deliver to this transport instead. */
+  readonly transport?: Transport;
+  readonly onInternalError?: InternalErrorHandler;
+  /** Full line override (§5.3). Declared here; honoured by the formatter in #7. */
+  readonly format?: (event: LogEvent) => string;
+  /** Declared here; honoured in #8. */
+  readonly redact?: RedactOptions | false;
+  // Queue options (§7.2). Declared here; honoured in #9.
+  readonly batchSize?: number;
+  readonly flushIntervalMs?: number;
+  readonly queueLimit?: number;
+  readonly maxConcurrency?: number;
+}
+
+/**
+ * `Error` is a positional second argument (§5.2): `log.error('Export failed', err, { id })`.
+ * With two arguments, an `Error` (or anything error-shaped) is the error; anything else is
+ * context.
+ */
+export interface LogMethod {
+  (message: string, context?: LogContext): void;
+  (message: string, error: unknown, context?: LogContext): void;
+}
+
+export interface Logger {
+  readonly trace: LogMethod;
+  readonly debug: LogMethod;
+  readonly info: LogMethod;
+  readonly warn: LogMethod;
+  readonly error: LogMethod;
+  readonly fatal: LogMethod;
+  /** A new logger whose context is this one's merged with `context`. */
+  child(context: LogContext): Logger;
+  /** Bounded: resolves when drained or when `timeoutMs` (default 2000) elapses. Never rejects. */
+  flush(timeoutMs?: number): Promise<void>;
+  stats(): LoggerStats;
+}
