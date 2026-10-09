@@ -1510,6 +1510,15 @@ Public repos have specific hazards. These are the ones that matter:
 - **Repo metadata** — description, topics, and a link to the npm package. Cheap, and it is how
   people arrive.
 
+As implemented (#24): `CONTRIBUTING.md` (set-up, the five test tiers and which need credentials
+— none but the live suite, which skips; the changeset rule; "measure, don't reason"; that
+maintainers release by merging the Version Packages PR; the two workflow hazards), `SECURITY.md`
+(private vulnerability reporting, which is enabled on the repository; the write-credential
+statement and what the package does about it), `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1,
+reports through the same private route), the eight keywords, and the repository description
+and topics. The npm link lands with the first publish (#27). These documents are repository
+files, not package contents: `files` stays `dist`, `README.md`, `LICENSE`.
+
 ---
 
 ## 13. Risks and open decisions
