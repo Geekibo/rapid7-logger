@@ -81,8 +81,10 @@ equally, do not ship a second transport speculatively.
 
 ### Current state and commands
 
-Phase 0 (#4) is done and the toolchain is scaffolded (#5); `src/` holds stub entry points that
-later issues fill in. Work proceeds phase by phase (§14). The target layout is §8.1 and the
+Phase 0 (#4) is done and the toolchain is scaffolded (#5). `src/core/` has the types, levels,
+config validation and `createLogger` (#6); `createLogger` delivers straight to a minimal
+`ConsoleTransport` until the queue (#9) and the webhook transport (#11, wired by #15) land.
+`src/next.ts` and `src/edge.ts` are still stubs. Work proceeds phase by phase (§14). The target layout is §8.1 and the
 `exports` map is §4.2 — follow them rather than inventing a structure.
 
 `spike/webhook-contract.mjs` is the phase 0 measurement script (#4). When a §2 fact is in doubt,

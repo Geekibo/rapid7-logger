@@ -397,6 +397,20 @@ a missing token breaks every integration test and every local run, and the worka
 reach for is a compile-time `#if DEBUG` guard that then diverges from production. Make the
 graceful path the only path.
 
+Options, as implemented (#6):
+
+| Option | Behaviour |
+|---|---|
+| `token` | Trimmed. Absent, empty or not a GUID ⇒ console-only and **one** warning (§13). Never echoed in a message. |
+| `region` | Trimmed, case-insensitive; default `eu`. Unknown ⇒ console-only and one warning. |
+| `level` | Trimmed, case-insensitive; default `info`. Unknown ⇒ `info` and one warning. Typed `Level \| (string & {})` so `process.env.LOG_LEVEL ?? 'info'` type-checks. |
+| `service`, `env` | Become root bound context: `service=… env=…` on every line. |
+| `transport` | Injects a `Transport` (§4.3) and bypasses token resolution — how the Console and Memory transports are used. |
+| `onInternalError` | `(error: Error) => void`. Default: one `console.warn`, rate-limited to one per minute per logger. A throwing handler is swallowed. |
+| `flush(timeoutMs = 2000)` | Bounded by a timer regardless of the transport. Never rejects. |
+
+`createLogger` itself never throws: a failure inside construction also degrades to console-only.
+
 ### 5.2 Logging
 
 ```ts
@@ -414,7 +428,14 @@ Design choices worth stating:
 
 - **`Error` is a positional argument**, not a context key. It is the thing people most often
   get wrong (`{ error: err }` serialises to `{}` because `Error` has non-enumerable fields), so
-  the API should make the right thing the easy thing and normalise `stack` itself.
+  the API should make the right thing the easy thing and normalise `stack` itself. The rule
+  (#6): with three arguments the second is always the error; with two, it is the error if it is
+  an `Error` or error-shaped (a string `message` plus a string `name` or `stack`), otherwise it
+  is context. Normalised to `{ name, message, stack?, digest? }`; a primitive becomes
+  `{ name: 'Error', message: String(value) }`.
+- **Level methods return `void`.** Delivery is the queue's business (§7.2); to wait for it, call
+  `flush()`. Widening to `Promise<void>` later would be non-breaking; the Edge entry (§6.3),
+  which sends immediately, may type its methods that way.
 - **`child()` returns a new logger with merged context.** This is how a correlation ID reaches
   every line without being threaded through every function signature.
 - **Levels are a fixed set**, mapped to the three-letter monikers Rapid7 users already search
@@ -497,13 +518,14 @@ export const onRequestError: Instrumentation.onRequestError = async (
   request,    // { path, method, headers }
   context,    // { routerKind, routePath, routeType, renderSource, revalidateReason, renderType }
 ) => {
-  await log.error('Unhandled server error', error, {
+  log.error('Unhandled server error', error, {
     path:       request.path,
     method:     request.method,
     routePath:  context.routePath,
     routeType:  context.routeType,   // 'render' | 'route' | 'action' | 'proxy'
     routerKind: context.routerKind,
   });
+  await log.flush(1500);   // bounded; the runtime may freeze the instant we return (§7.3)
 };
 
 export async function register() {
@@ -707,6 +729,15 @@ log.stats();
 // { queued: 3, sent: 1402, dropped: 0, failed: 2, retried: 5, lastError: '…' }
 ```
 
+The counters are one object shared by a logger and every child it spawns; `stats()` returns a
+copy. Who increments what:
+
+| Field | Incremented by |
+|---|---|
+| `failed`, `lastError` | The logger, when a transport's `send` or `flush` throws or rejects (#6); the webhook transport, when attempts are exhausted (#12) |
+| `queued`, `dropped` | The queue (#9) |
+| `sent`, `retried` | The webhook transport (#11, #12) |
+
 Plus an `onInternalError` callback (default: one `console.warn`, rate-limited) so a persistently
 broken token is visible somewhere without spamming stdout. Note the limit: only a *malformed*
 token produces a failure the logger can see. A wrong but well-formed token, or the wrong region,
@@ -721,7 +752,7 @@ succeeds silently (§2.6).
 ```
 rapid7-logger/
 ├── src/
-│   ├── core/            logger.ts  formatter.ts  queue.ts  redact.ts  levels.ts  types.ts
+│   ├── core/            logger.ts  formatter.ts  queue.ts  redact.ts  levels.ts  config.ts  types.ts
 │   ├── transports/      rapid7-webhook.ts  console.ts  memory.ts
 │   ├── index.ts         Node entry  (lifecycle hooks, AsyncLocalStorage)
 │   ├── next.ts          Next entry  ('server-only', withLogging, onRequestError, after())
@@ -1115,8 +1146,9 @@ Public repos have specific hazards. These are the ones that matter:
 §10.2), release mechanism (Changesets + environment approval, §10.4), package name
 (`@geekibo/rapid7-logger`, §3.1), and catching a misconfigured token (§2.6, settled 2026-10-08):
 
-- **Validate the config shape at construction.** The token must be a GUID and the region one of
-  `eu`, `us`, `au`, `ca`, `jp`. A value that fails is treated like an absent token: the logger
+- **Validate the config shape at construction.** The token (trimmed; empty counts as absent)
+  must be a GUID and the region (trimmed, case-insensitive) one of `eu`, `us`, `au`, `ca`,
+  `jp`. A value that fails is treated like an absent token: the logger
   falls back to console-only and reports it once through `onInternalError`. It never throws.
   This catches malformed tokens and mistyped regions at startup rather than as runtime `404`s.
 - **Document what it cannot catch.** The README contract states that a `204` means *accepted*,
