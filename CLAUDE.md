@@ -121,6 +121,8 @@ Prettier skips `*.md`, `.github/` and `spike/` — don't reformat those.
 - `test/contract/` — the `Transport` invariants above, especially #3 and #4. `transport.contract.ts`
   is a `describe` factory; add a one-line `*.contract.test.ts` for any new transport.
 - `test/live/` — **skipped by default** via `describe.skipIf(!process.env.RAPID7_LIVE_TOKEN)`.
+  To run it: copy `.env.example` to `.env`, point it at a dedicated log, then
+  `node --env-file=.env node_modules/.bin/vitest run test/live`.
   A clone with no credentials must have a fully green test run, and fork PRs get no secrets, so
   these must *skip*, never fail.
 - **Never commit a token.** Not in a test, not in a fixture, not in a comment. Credentials come
