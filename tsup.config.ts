@@ -42,6 +42,11 @@ export default defineConfig([
     sourcemap: true,
     removeNodeProtocol: false,
     esbuildPlugins: [noNodeBuiltins],
+    // `import('next/server')` stays a native import() in ESM; in the CJS build lower it to a
+    // require(), so a consumer's CJS test runner (Jest) can resolve it.
+    esbuildOptions(options, { format }) {
+      if (format === 'cjs') options.supported = { ...options.supported, 'dynamic-import': false };
+    },
   },
   {
     // Edge is built alone and unsplit, so dist/edge.js is one self-contained file and CI's
