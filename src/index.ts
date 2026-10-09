@@ -1,5 +1,11 @@
-// Node entry point (DESIGN §4.1). Lifecycle flush and the webhook wiring land in #15.
-export { createLogger } from './core/logger.js';
+// Node entry point (DESIGN §4.1): the core plus lifecycle flush (§7.3). Node-only code lives
+// under src/node/; the Edge and Next entries import from the core, never from here.
+export {
+  createLogger,
+  type LifecycleOptions,
+  type NodeLogger,
+  type NodeLoggerOptions,
+} from './node/logger.js';
 export { formatEvent } from './core/formatter.js';
 export {
   ConsoleTransport,

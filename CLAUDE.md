@@ -90,8 +90,11 @@ formatter. `Rapid7WebhookTransport` (#11) is wired in: a valid token posts to Ra
 retry policy (#12), anything else degrades to the console. `composeLogger` is the internal
 seam Edge (#22) uses to swap in immediate send. Tests that create a logger with a valid-shaped
 token must stub `fetch`.
-`src/next.ts` and `src/edge.ts` are still stubs. Work proceeds phase by phase (§14). The target layout is §8.1 and the
-`exports` map is §4.2 — follow them rather than inventing a structure.
+The Node entry (#15) wraps the core `createLogger` with lifecycle flush hooks under
+`src/node/` and adds `close()`; `src/edge.ts` and `src/next.ts` are still stubs and must import
+from the core, never from `src/index.ts` or `src/node/`. Work proceeds phase by phase (§14).
+The target layout is §8.1 and the `exports` map is §4.2 — follow them rather than inventing a
+structure.
 
 `spike/webhook-contract.mjs` is the phase 0 measurement script (#4). When a §2 fact is in doubt,
 re-run its probe (`node --env-file=.env spike/webhook-contract.mjs <probe>`) rather than
@@ -102,8 +105,8 @@ CI (`.github/workflows/ci.yml`) runs these scripts by name; a rename breaks CI:
 ```sh
 npm run typecheck   # tsc --noEmit
 npm run lint        # eslint . && prettier --check .   (npm run format to fix)
-npm test            # vitest run — live tests skip without RAPID7_LIVE_TOKEN
 npm run build       # tsup → dist/{index,next}.{js,cjs,d.ts,d.cts}, dist/edge.{js,d.ts} (ESM-only)
+npm test            # vitest run — after build; live tests skip without RAPID7_LIVE_TOKEN
 ```
 
 `release.yml` also calls `npm run version` and `npm run release`; those arrive with Changesets
@@ -120,6 +123,9 @@ Prettier skips `*.md`, `.github/` and `spike/` — don't reformat those.
   no credentials.
 - `test/contract/` — the `Transport` invariants above, especially #3 and #4. `transport.contract.ts`
   is a `describe` factory; add a one-line `*.contract.test.ts` for any new transport.
+- `test/node/` — lifecycle integration: spawns `node` on fixtures that import the **built**
+  `dist/`, so run `npm run build` before `npm test` locally (CI builds before testing; the
+  suite skips without `dist/` locally and fails without it when `CI` is set).
 - `test/live/` — **skipped by default** via `describe.skipIf(!process.env.RAPID7_LIVE_TOKEN)`.
   To run it: copy `.env.example` to `.env`, point it at a dedicated log, then
   `node --env-file=.env node_modules/.bin/vitest run test/live`.

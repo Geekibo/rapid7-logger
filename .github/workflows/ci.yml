@@ -51,15 +51,16 @@ jobs:
         if: steps.detect.outputs.toolchain == 'true'
         run: npm run lint
 
-      # Live tests skip themselves without RAPID7_LIVE_TOKEN, which is never available
-      # to a pull request from a fork. They must skip, never fail.
-      - name: Test
-        if: steps.detect.outputs.toolchain == 'true'
-        run: npm test
-
       - name: Build
         if: steps.detect.outputs.toolchain == 'true'
         run: npm run build
+
+      # After Build: test/node/ spawns node against dist/ (DESIGN §8.3). Live tests skip
+      # themselves without RAPID7_LIVE_TOKEN, which is never available to a pull request from a
+      # fork. They must skip, never fail.
+      - name: Test
+        if: steps.detect.outputs.toolchain == 'true'
+        run: npm test
 
       # Invariant 8 (CLAUDE.md): the edge bundle must run where node builtins do not
       # exist. A regression here breaks consumers at deploy time, not build time.
