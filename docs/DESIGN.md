@@ -985,7 +985,7 @@ rapid7-logger/
 │   └── live/            gated integration test (§9.2)
 ├── spike/               phase 0 endpoint measurement script (#4) — not shipped
 ├── examples/
-│   ├── node-basic/      plain Node script
+│   ├── node-basic/      plain Node script, written as a consumer would (#17); run by test/node
 │   ├── nextjs-app/      instrumentation.ts + a Server Action + a Route Handler
 │   └── nextjs-edge/
 ├── .github/workflows/   ci.yml  release.yml

@@ -125,6 +125,8 @@ Prettier skips `*.md`, `.github/` and `spike/` — don't reformat those.
   no credentials.
 - `test/contract/` — the `Transport` invariants above, especially #3 and #4. `transport.contract.ts`
   is a `describe` factory; add a one-line `*.contract.test.ts` for any new transport.
+- `examples/node-basic/` imports the package by name through a symlink the `test/node/` example
+  test creates; it must stay consumer-shaped (no `../../dist` imports).
 - `test/node/` — lifecycle integration: spawns `node` on fixtures that import the **built**
   `dist/`, so run `npm run build` before `npm test` locally (CI builds before testing; the
   suite skips without `dist/` locally and fails without it when `CI` is set).

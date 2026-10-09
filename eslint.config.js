@@ -21,7 +21,12 @@ export default tseslint.config(
     rules: { '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }] },
   },
   {
-    files: ['spike/**/*.mjs', '*.config.js', 'test/node/fixtures/**/*.{mjs,cjs}'],
+    files: [
+      'spike/**/*.mjs',
+      '*.config.js',
+      'test/node/fixtures/**/*.{mjs,cjs}',
+      'examples/**/*.mjs',
+    ],
     languageOptions: { globals: globals.node },
     // `const { dropped, ...rest } = obj` is how the spike omits a field before printing.
     rules: { 'no-unused-vars': ['error', { ignoreRestSiblings: true }] },

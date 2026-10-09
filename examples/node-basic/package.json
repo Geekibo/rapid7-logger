@@ -1,0 +1,12 @@
+{
+  "name": "node-basic-example",
+  "private": true,
+  "type": "module",
+  "description": "Confirm a Rapid7 InsightOps token and region work from plain Node.",
+  "scripts": {
+    "start": "node index.mjs"
+  },
+  "dependencies": {
+    "@geekibo/rapid7-logger": "file:../.."
+  }
+}
