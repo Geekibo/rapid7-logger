@@ -11,6 +11,7 @@ interface PackageJson {
   repository: { url: string };
   files: string[];
   sideEffects: boolean | string[];
+  keywords: string[];
 }
 
 const pkg = JSON.parse(
@@ -56,6 +57,19 @@ describe('package.json', () => {
   it('publishes publicly, with a repository URL npm provenance will match (DESIGN §10.3)', () => {
     expect(pkg.publishConfig.access).toBe('public');
     expect(pkg.repository.url).toBe('git+https://github.com/Geekibo/rapid7-logger.git');
+  });
+
+  it('carries the keywords people actually search for (DESIGN §12)', () => {
+    expect(pkg.keywords).toEqual([
+      'rapid7',
+      'insightops',
+      'logentries',
+      'logging',
+      'logger',
+      'nextjs',
+      'serverless',
+      'structured-logging',
+    ]);
   });
 
   it('ships only dist, the README and the licence', () => {

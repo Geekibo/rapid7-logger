@@ -2,6 +2,16 @@
   "name": "@geekibo/rapid7-logger",
   "version": "0.0.0",
   "description": "Reliable Rapid7 InsightOps logging for Node.js and Next.js",
+  "keywords": [
+    "rapid7",
+    "insightops",
+    "logentries",
+    "logging",
+    "logger",
+    "nextjs",
+    "serverless",
+    "structured-logging"
+  ],
   "license": "MIT",
   "repository": {
     "type": "git",
