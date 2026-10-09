@@ -95,9 +95,11 @@ token must stub `fetch`.
 The Node entry (#15) wraps the core `createLogger` with lifecycle flush hooks under
 `src/node/` and adds `close()`; correlation (#16) is a core `contextProvider` seam plus pure
 W3C helpers in `src/core/traceparent.ts` and an `AsyncLocalStorage` store in
-`src/node/trace.ts` (`withTrace`, `outboundHeaders`); `src/next.ts` (#18) exports the core `createLogger` and `createRequestErrorHandler`
-(`src/next/request-error.ts`, structural Next types — `next` is not installed); `src/edge.ts`
-is still a stub. Both must import from the core, never from `src/index.ts` or `src/node/`. Work proceeds phase by phase (§14).
+`src/node/trace.ts` (`withTrace`, `outboundHeaders`); `src/next.ts` (#18, #19) exports the core `createLogger`, `createRequestErrorHandler` and
+`withLogging` (`src/next/`, structural Next types — `next` is not installed; `after()` is
+reached by a dynamic `import('next/server')` that must stay dynamic, and
+`src/next/next-server.d.ts` is an ambient stand-in that must never ship); `src/edge.ts` is
+still a stub. Both must import from the core, never from `src/index.ts` or `src/node/`. Work proceeds phase by phase (§14).
 The target layout is §8.1 and the `exports` map is §4.2 — follow them rather than inventing a
 structure.
 

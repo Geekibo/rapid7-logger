@@ -677,8 +677,9 @@ The recommended pattern is a thin wrapper that supplies correlation and timing:
 ```ts
 'use server';
 import { withLogging } from '@geekibo/rapid7-logger/next';
+import { log } from '@/lib/log';
 
-export const publishSurvey = withLogging('publishSurvey', async (log, id: number) => {
+export const publishSurvey = withLogging(log, 'publishSurvey', async (log, id: number) => {
   log.info('publishing', { id });
   const res = await api.publish(id);
   log.info('published', { id, status: res.status });
@@ -690,6 +691,40 @@ export const publishSurvey = withLogging('publishSurvey', async (log, id: number
 and the outcome, log any thrown error **and rethrow it unchanged**, record duration, and
 schedule the flush (§7.3). It must never swallow an exception — a logging wrapper that changes
 control flow is a bug factory.
+
+As implemented (#19), `withLogging(log, name, fn, options?)`:
+
+- **The logger is explicit.** The package reads no environment and has no default logger, so
+  the original snippet's implicit logger could not exist; this mirrors
+  `createRequestErrorHandler(log, …)`. `fn` receives a child bound to
+  `{ traceId, operation: name }`; the wrapper preserves `fn`'s parameter and return types.
+- **Lines:** `debug` `<name> started`; `info` `<name> completed` with `durationMs`; on a throw,
+  `error` `<name> failed` with the error and `durationMs`, then the **same object** rethrown.
+  Next's own control flow is implemented with throws — `redirect()`, `notFound()`, dynamic
+  bailouts (digests starting `NEXT_`, `DYNAMIC_SERVER_USAGE`,
+  `BAILOUT_TO_CLIENT_SIDE_RENDERING`) — so those are logged as completed, with the digest, and
+  rethrown; otherwise every redirecting Server Action would be a failure with an eager flush.
+  Every logger call inside the wrapper is guarded: a broken logger never replaces the user's
+  result or error.
+- **Trace:** inherited from a Request-like first argument's `traceparent` (Route Handlers) —
+  deliberately not from a `FormData`, whose fields a client controls — otherwise generated.
+  The id is *bound* context, so on Node inside `withTrace` the ambient id wins (per-call >
+  ambient > bound), which is the right outcome: same request. The Next entry cannot use
+  `AsyncLocalStorage`, so nested calls do not see the trace unless the app wraps with
+  `withTrace` from the Node entry.
+- **Flush:** `flushMode: 'after' | 'sync' | 'none'`, `flushTimeoutMs` default 1500.
+  `'after'` (default) schedules `log.flush()` with `after()` from `next/server` and **falls back
+  to the inline flush** when `after` is unavailable (Next < 15.1, module missing) or throws
+  (outside a request scope), so nothing is lost. `'sync'` awaits delivery before resolving or
+  rejecting. `options.after` replaces the scheduler (Next's own `after`, or a `waitUntil`).
+- **`after()` is reached by a dynamic `import('next/server')`**, kicked off once at module
+  load and read synchronously at call time. Verified: tsup leaves the optional peer external in
+  both builds; a static import would make loading `/next` fail wherever `next` is absent (unit
+  tests, Node 15.0 ESM linking); the CJS build lowers it to a `require()` so a consumer's CJS
+  test runner resolves it. The ambient `declare module 'next/server'` used to type-check is
+  `unknown`-typed and does not reach `dist/`. Not yet verified on a real Next server: `after()`
+  on both runtimes and the Edge bundler's handling of the dynamic import — recorded for #21/#22,
+  with `options.after` as the no-dynamic-import path.
 
 ### 6.3 The Edge runtime
 
@@ -756,8 +791,9 @@ As implemented (#16):
   a span per call — a logger is not a tracer.
 - **Edge:** explicit passing (`child({ traceId })` or per-call), or a user-supplied
   `contextProvider` on a runtime that has ALS. The pure helpers may be re-exported from the
-  Edge entry (#22). The `from '@geekibo/rapid7-logger/next'` import above is #19's decision:
-  the Next entry must also run on Edge.
+  Edge entry (#22). `withTrace` is Node-only and is **not** exported from `/next` (the Next
+  entry must run on Edge); `withLogging` (§6.2) is the Edge-safe mechanism there, and on Node
+  the ALS trace wins over the one it generates.
 
 ### 6.5 Making browser misuse structurally impossible
 
@@ -1008,7 +1044,7 @@ rapid7-logger/
 │   ├── core/            logger.ts  formatter.ts  queue.ts  redact.ts  levels.ts  config.ts  traceparent.ts  types.ts
 │   ├── transports/      rapid7-webhook.ts  console.ts  memory.ts
 │   ├── node/            lifecycle.ts (process-level registry)  logger.ts (Node createLogger)  trace.ts (AsyncLocalStorage)
-│   ├── next/            request-error.ts (createRequestErrorHandler)  — core imports only
+│   ├── next/            request-error.ts  with-logging.ts  flush-timeout.ts  next-server.d.ts (ambient, not shipped) — core imports only
 │   ├── index.ts         Node entry  (re-exports src/node + core; AsyncLocalStorage in #16)
 │   ├── next.ts          Next entry  ('server-only', withLogging, onRequestError, after())
 │   └── edge.ts          Edge entry  (immediate-send)
@@ -1412,8 +1448,9 @@ Public repos have specific hazards. These are the ones that matter:
    The queue (#9) already drains eagerly on `error`+ by default. *Settled for the Node entry
    (#15):* no `flushMode: 'sync'` option — it would turn the level methods into promises
    (reversing the #6 decision), and `log.error(…); await log.flush()` already awaits delivery
-   because the queue drains eagerly on `error`+. `withLogging` (#19) may still offer its own
-   `flushMode`.
+   because the queue drains eagerly on `error`+. `withLogging` (#19) offers
+   `flushMode: 'after' | 'sync' | 'none'` with `'after'` as the default and `'sync'` for
+   callers who want to await delivery.
 3. **Whether to ship `withLogging` in v1** or keep v1 to the primitive logger. It is the piece
    most likely to need redesign after real use; shipping it in `0.x` is fine, in `1.0` less so.
 4. **Require signed commits?** (§11.1) Strong, but it adds real contributor friction and can

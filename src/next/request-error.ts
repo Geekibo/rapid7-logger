@@ -2,6 +2,7 @@ import { renderValue } from '../core/formatter.js';
 import { normaliseError } from '../core/logger.js';
 import { readTraceparent } from '../core/traceparent.js';
 import type { LogContext, LogErrorInfo, Logger } from '../core/types.js';
+import { DEFAULT_NEXT_FLUSH_MS, flushTimeout } from './flush-timeout.js';
 
 // The one-liner for instrumentation.ts (DESIGN §6.1): a function assignable to Next's
 // `Instrumentation.onRequestError`. Runs under both NEXT_RUNTIME values, so it imports from the
@@ -50,7 +51,7 @@ export interface RequestErrorHandlerOptions {
 }
 
 export const DEFAULT_REQUEST_ERROR_MESSAGE = 'Unhandled server error';
-export const DEFAULT_REQUEST_ERROR_FLUSH_MS = 1500;
+export const DEFAULT_REQUEST_ERROR_FLUSH_MS = DEFAULT_NEXT_FLUSH_MS;
 
 /**
  * `error` is `unknown` (§6.1): narrow it. An Error, or anything error-shaped, keeps its
@@ -98,12 +99,6 @@ function contextOf(request: unknown, context: unknown): LogContext {
   const trace = readTraceparent(request as Parameters<typeof readTraceparent>[0]);
   if (trace) out.traceId = trace.traceId;
   return out;
-}
-
-function flushTimeout(value: number | undefined): number {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0
-    ? value
-    : DEFAULT_REQUEST_ERROR_FLUSH_MS;
 }
 
 /**

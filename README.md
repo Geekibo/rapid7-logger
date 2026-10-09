@@ -76,12 +76,26 @@ the Edge runtime; its `createLogger` has no process lifecycle hooks and no ambie
 // a Server Action
 'use server';
 import { withLogging } from '@geekibo/rapid7-logger/next';
+import { log } from '@/lib/log';
 
-export const publishSurvey = withLogging('publishSurvey', async (log, id: number) => {
+export const publishSurvey = withLogging(log, 'publishSurvey', async (log, id: number) => {
   log.info('publishing', { id });
   return api.publish(id);
 });
 ```
+
+```ts
+// a Route Handler: the trace id comes from the request's traceparent
+export const GET = withLogging(log, 'listSurveys', async (log, req: Request) => {
+  log.info('listing');
+  return Response.json(await db.surveys());
+});
+```
+
+`withLogging` logs start, outcome and duration under a trace id, logs a thrown error and
+rethrows it unchanged, then schedules the flush with `after()` from `next/server` — falling back
+to an inline flush when `after()` is unavailable or throws, so nothing is lost when the runtime
+freezes after the response. `flushMode: 'sync'` awaits delivery instead.
 
 ## Correlation
 
