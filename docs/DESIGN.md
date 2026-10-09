@@ -948,7 +948,11 @@ Beyond the usual, three project-specific gates:
 2. **The public API surface is snapshotted.** An accidental type-level breaking change in a
    logger is painful to discover downstream.
 3. **`send()` never rejects**, asserted against a transport whose `fetch` throws, returns `500`,
-   returns `401`, and times out. This is the headline guarantee; test it like one.
+   returns `401`, and times out. This is the headline guarantee; test it like one. Implemented
+   (#13) as `test/contract/transport.contract.ts`, a suite parameterised over every transport:
+   `send` never throws or rejects (hostile events for all; the `fetch` failure modes for the
+   webhook), `flush` is bounded at both the transport and the logger level, a hanging transport
+   never blocks the caller, and the caller's context is never mutated.
 
 ---
 

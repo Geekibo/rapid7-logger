@@ -118,7 +118,8 @@ Prettier skips `*.md`, `.github/` and `spike/` — don't reformat those.
 
 - `test/unit/` — fake `fetch`; formatter, redaction, retry policy, queue bounds. Runs anywhere,
   no credentials.
-- `test/contract/` — the `Transport` invariants above, especially #3 and #4.
+- `test/contract/` — the `Transport` invariants above, especially #3 and #4. `transport.contract.ts`
+  is a `describe` factory; add a one-line `*.contract.test.ts` for any new transport.
 - `test/live/` — **skipped by default** via `describe.skipIf(!process.env.RAPID7_LIVE_TOKEN)`.
   A clone with no credentials must have a fully green test run, and fork PRs get no secrets, so
   these must *skip*, never fail.
