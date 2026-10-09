@@ -160,7 +160,7 @@ describe('an explicit transport', () => {
 });
 
 describe('the console fallback', () => {
-  it('routes by level and passes context and the error as extra arguments', async () => {
+  it('prints the formatted line, routed by level', async () => {
     const log = createLogger({ onInternalError: () => {} });
     log.trace('t');
     log.debug('d');
@@ -170,16 +170,17 @@ describe('the console fallback', () => {
     log.fatal('f');
     await drain();
     expect(debug).toHaveBeenCalledTimes(0); // trace and debug are below the default threshold
-    await drain();
     expect(info).toHaveBeenCalledOnce();
-    await drain();
-    expect(info.mock.calls[0]?.[1]).toEqual({ a: 1 });
-    await drain();
+    expect(info.mock.calls[0]).toEqual([expect.stringMatching(/^\[\d\d:\d\d:\d\d INF\] i a=1$/)]);
     expect(warn).toHaveBeenCalledOnce();
-    await drain();
     expect(error).toHaveBeenCalledTimes(2);
+    expect(error.mock.calls[0]?.[0]).toMatch(/^\[\d\d:\d\d:\d\d ERR\] e Error: boom/);
+  });
+
+  it('honours a format override without a token', async () => {
+    createLogger({ onInternalError: () => {}, format: (e) => `custom ${e.message}` }).info('x');
     await drain();
-    expect(error.mock.calls[0]?.[1]).toMatchObject({ name: 'Error', message: 'boom' });
+    expect(info).toHaveBeenCalledWith('custom x');
   });
 
   it('survives a console method that throws', async () => {
@@ -201,8 +202,7 @@ describe('redaction reaches the console fallback', () => {
   it('prints [redacted], never the secret', async () => {
     createLogger({ onInternalError: () => {} }).info('login', { password: 'hunter2' });
     await drain();
-    expect(info.mock.calls[0]?.[1]).toEqual({ password: '[redacted]' });
-    await drain();
+    expect(info.mock.calls[0]?.[0]).toMatch(/ login password=\[redacted\]$/);
     expect(JSON.stringify(info.mock.calls)).not.toContain('hunter2');
   });
 });
