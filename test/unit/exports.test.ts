@@ -10,6 +10,7 @@ describe('the Node entry point', () => {
       'LEVEL_MONIKERS',
       'REGIONS',
       'createLogger',
+      'formatEvent',
     ]);
   });
 });

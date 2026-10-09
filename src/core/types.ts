@@ -44,6 +44,22 @@ export interface LoggerStats {
   readonly lastError?: string;
 }
 
+/** Turns an event into the single physical line a transport posts (§5.3). Never throws. */
+export type LineFormatter = (event: LogEvent) => string;
+
+export interface FormatterOptions {
+  /**
+   * Full line override (§5.3). Its output is still flattened and truncated — one event per
+   * request and no interior newlines are correctness, not style. A throw or a non-string
+   * return falls back to the default line.
+   */
+  readonly format?: (event: LogEvent) => string;
+  /** Cap on the UTF-8 byte length of the line, marker included (§5.4). Default 32,767. */
+  readonly maxBytes?: number;
+  /** Context key whose string value becomes the clickable stamp (§2.5). Default `traceId`. */
+  readonly correlationKey?: string;
+}
+
 /** Receives the logger's own failures. The default is one rate-limited `console.warn`. */
 export type InternalErrorHandler = (error: Error) => void;
 
@@ -70,8 +86,10 @@ export interface LoggerOptions {
   /** Bypass token resolution and deliver to this transport instead. */
   readonly transport?: Transport;
   readonly onInternalError?: InternalErrorHandler;
-  /** Full line override (§5.3). Declared here; honoured by the formatter in #7. */
+  /** Full line override (§5.3). Declared here; forwarded to the transport by #15. */
   readonly format?: (event: LogEvent) => string;
+  /** Line byte cap (§5.4). Declared here; forwarded to the transport by #15. */
+  readonly maxBytes?: number;
   /** Declared here; honoured in #8. */
   readonly redact?: RedactOptions | false;
   // Queue options (§7.2). Declared here; honoured in #9.

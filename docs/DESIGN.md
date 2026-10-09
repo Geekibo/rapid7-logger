@@ -152,8 +152,8 @@ configurable. Measured from Node: a real nested stack trace flattened this way w
 exactly one entry, byte-identical to what was sent.
 
 A lone `\r` is not a correctness problem: it neither truncates nor splits, so the rule covers
-`\r\n` and `\n`. Whether to also replace a stray `\r` for readability is a formatter decision
-(#7), not an endpoint requirement.
+`\r\n` and `\n`. The formatter (#7) replaces a stray `\r` with a space as well, for
+readability; that is a formatting choice, not an endpoint requirement.
 
 ### 2.3 Consequences for throughput
 
@@ -408,6 +408,8 @@ Options, as implemented (#6):
 | `transport` | Injects a `Transport` (§4.3) and bypasses token resolution — how the Console and Memory transports are used. |
 | `onInternalError` | `(error: Error) => void`. Default: one `console.warn`, rate-limited to one per minute per logger. A throwing handler is swallowed. |
 | `flush(timeoutMs = 2000)` | Bounded by a timer regardless of the transport. Never rejects. |
+| `format` | Full line override (§5.3). Its output is still flattened and truncated. Forwarded to the transport by #15. |
+| `maxBytes` | Line byte cap (§5.4). Default 32,767. Forwarded to the transport by #15. |
 
 `createLogger` itself never throws: a failure inside construction also degrades to console-only.
 
@@ -450,17 +452,36 @@ already target:
 [HH:mm:ss LVL] <traceId>: _ message key=value key2=value2
 ```
 
-- `[HH:mm:ss LVL] ` prefix — familiar, and the level is greppable.
+- `[HH:mm:ss LVL] ` prefix — familiar, and the level is greppable. The time is **UTC**
+  (`toISOString().slice(11, 19)`, no `Z`); an invalid `Date` prints `--:--:--`. The .NET
+  original used local time; UTC is a deliberate divergence: production runs in UTC, Edge
+  runtimes may lack ICU, and tests stay deterministic. Rapid7 stamps its own ingestion time
+  anyway.
 - The correlation stamp per §2.5, emitted **only when a correlation ID is present**. This
   conditionality is why it is built by the formatter rather than expressed as a user template:
-  a plain template string cannot omit a field when it is absent.
+  a plain template string cannot omit a field when it is absent. The id is read from the
+  `traceId` context key (`correlationKey` on the formatter; #16 populates it) when its value
+  is a string with non-whitespace content, and that key is then **omitted from the trailing
+  pairs** — a `traceId=<id>` pair is not clickable on its value and costs ~45 bytes against
+  the cap. Any other value is left as an ordinary pair and no stamp is emitted.
 - Context as trailing `key=value` pairs — scannable, and each key is clickable in Rapid7 for
-  free, since they already parse as key/value pairs.
-- **Then flattened to a single physical line, unconditionally** (§2.2).
+  free, since they already parse as key/value pairs. Values: a string is bare unless it is
+  empty or contains whitespace, `=` or `"`, in which case it is JSON-quoted; numbers,
+  booleans, `null` and bigints print as themselves; a `Date` as ISO; an `Error` as
+  `"Name: message"`; an object or array as compact JSON (cycles become `"[Circular]"`);
+  `undefined` is omitted; anything that throws while rendering becomes `[unserializable]`.
+  Whether Rapid7 parses a quoted value as the pair's value is unmeasured (§9.1).
+- The error last: an optional `digest=<digest>` pair (§6.1), then the flattened stack, or
+  `Name: message` when there is none. Last because the stack is the longest, least structured
+  part of the line, so truncation eats deep frames rather than context keys.
+- **Then flattened to a single physical line, unconditionally** (§2.2), and truncated (§5.4).
 
 Allow a full `format: (event) => string` override for people with existing parsers, but keep
 one-event-per-request and newline-flattening outside the user's reach — they are correctness,
-not style.
+not style. The override's output is flattened and truncated like the default line; if it throws
+or returns a non-string, the default line is emitted with a `formatError="…"` pair appended.
+`formatEvent` is exported so an override can compose with the default. The formatter never
+throws, so transports call it unguarded.
 
 ### 5.4 Defensive truncation
 
@@ -498,6 +519,14 @@ implements this.
 
 A truncated line that says so is diagnosable. A silently cut line sends you looking for a bug
 that is in your logger.
+
+As implemented (#7): `N of M` means N bytes were removed from an M-byte line (M is the full
+flattened line's UTF-8 length). The marker is reserved at its widest before cutting, so the
+output never exceeds `maxBytes`; the cut walks code points, so a multi-byte character or a
+surrogate pair is never split. `maxBytes` is validated: `Infinity` disables truncation, a
+non-number, `NaN` or a non-positive value means the default, and anything under 128 is raised
+to 128 (the marker alone needs ~40 bytes). The trailing `\n` the transport appends is not
+counted; the endpoint's cap excludes it too.
 
 ---
 
@@ -777,7 +806,7 @@ rapid7-logger/
 |---|---|---|
 | Language | TypeScript, `strict` | Types are a deliverable, not a by-product |
 | Build | **tsup** | Dual ESM+CJS plus `.d.ts` in one config; near-zero ceremony |
-| Test | **Vitest** | Native ESM, fast, good fake-timer support for the batching tests |
+| Test | **Vitest** + **fast-check** | Native ESM, fast, good fake-timer support for the batching tests; property tests for "never contains a newline" and the byte cap |
 | Lint/format | ESLint + Prettier | Conventional; keeps contributor friction low |
 | Versioning | **Changesets** | PR-authored changelog entries; works cleanly with OSS contributions |
 | CI | GitHub Actions | One job, `ci` (the required status check), on Node 22: typecheck, lint + Prettier, tests, build, edge-bundle check. `engines` declares a Node 20.9 floor that CI does not exercise; a matrix would rename the required check |
@@ -817,6 +846,8 @@ matters — that a line posted from Node appears in Rapid7. That needs a live te
 | A bad token does not throw | Point at a **malformed** token (→ `404`); assert the app survives and `stats().failed` rises. A well-formed wrong token returns `204` (§2.6), so it cannot be asserted this way |
 | The correlation stamp is clickable | Manual, once — check in the Rapid7 UI (§2.5) |
 | Truncation marker appears | Post > `maxBytes`; confirm the marker |
+| A quoted value is parsed as the pair's value | Post `key="two words"`; query `where(key="two words")` — unmeasured, the formatter (#7) assumes it |
+| U+2028 / U+2029 do not split an entry | Post a line containing each; confirm one entry — unmeasured, the formatter leaves them alone |
 
 ### 9.2 Gated live test
 
