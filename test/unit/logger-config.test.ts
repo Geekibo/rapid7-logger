@@ -16,6 +16,8 @@ const drain = async () => {
 };
 
 beforeEach(() => {
+  // A valid token now posts to the webhook (#11); nothing in this suite may reach the network.
+  vi.stubGlobal('fetch', () => Promise.resolve(new Response(null, { status: 204 })));
   warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
   info = vi.spyOn(console, 'info').mockImplementation(() => {});
   error = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -24,6 +26,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe('a missing token (§5.1)', () => {
@@ -74,11 +77,11 @@ describe('an invalid configuration', () => {
   });
 
   it('warns once about an unknown level and uses info', async () => {
-    const log = createLogger({ token: GUID, level: 'loud' });
-    await drain();
-    expect(warn).toHaveBeenCalledOnce();
-    await drain();
-    expect(warn.mock.calls[0]?.[0]).toMatch(/level "loud"/);
+    const log = createLogger({ level: 'loud' });
+    expect(warn.mock.calls.map((c) => String(c[0]))).toEqual([
+      expect.stringMatching(/level "loud"/),
+      expect.stringMatching(/no token/),
+    ]);
     log.debug('hidden');
     log.info('shown');
     await drain();

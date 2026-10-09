@@ -13,6 +13,7 @@ describe('the Node entry point', () => {
       'LEVEL_MONIKERS',
       'MemoryTransport',
       'REGIONS',
+      'Rapid7WebhookTransport',
       'createLogger',
       'createRedactor',
       'formatEvent',

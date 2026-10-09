@@ -28,20 +28,19 @@ export function resolveConfig(
 ): ResolvedConfig {
   const trimmedToken = token?.trim() ?? '';
   if (trimmedToken === '') {
-    return { ok: false, problem: 'no token configured; logging to the console only' };
+    return { ok: false, problem: 'no token configured' };
   }
   if (!TOKEN_PATTERN.test(trimmedToken)) {
     return {
       ok: false,
-      problem:
-        'the token is not a GUID (expected 8-4-4-4-12 hex digits); logging to the console only',
+      problem: 'the token is not a GUID (expected 8-4-4-4-12 hex digits)',
     };
   }
   const normalisedRegion = region === undefined ? DEFAULT_REGION : region.trim().toLowerCase();
   if (!isRegion(normalisedRegion)) {
     return {
       ok: false,
-      problem: `unknown region "${normalisedRegion}" (expected one of ${REGIONS.join(', ')}); logging to the console only`,
+      problem: `unknown region "${normalisedRegion}" (expected one of ${REGIONS.join(', ')})`,
     };
   }
   return { ok: true, token: trimmedToken, region: normalisedRegion };

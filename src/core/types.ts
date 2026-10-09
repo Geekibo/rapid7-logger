@@ -104,10 +104,12 @@ export interface LoggerOptions {
   readonly level?: Level | (string & {});
   /** Bypass token resolution and deliver to this transport instead. */
   readonly transport?: Transport;
+  /** The `fetch` the webhook transport uses. Defaults to the global one. Ignored with `transport`. */
+  readonly fetch?: typeof fetch;
   readonly onInternalError?: InternalErrorHandler;
-  /** Full line override (§5.3). Declared here; forwarded to the transport by #15. */
+  /** Full line override (§5.3). Passed to the transport. */
   readonly format?: (event: LogEvent) => string;
-  /** Line byte cap (§5.4). Declared here; forwarded to the transport by #15. */
+  /** Line byte cap (§5.4). Passed to the transport. */
   readonly maxBytes?: number;
   /** On by default (§6.6). `false` disables redaction entirely. */
   readonly redact?: RedactOptions | false;

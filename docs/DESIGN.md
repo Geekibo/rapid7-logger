@@ -165,6 +165,19 @@ production:
 - A bounded queue with **drop-on-overflow** is mandatory. The alternative — blocking the
   application to log — is strictly worse than losing log lines.
 
+As implemented (#11), measured on Node 20.20 / undici 6.23 against a local server:
+
+- Node's global `fetch` **pools connections by default** — six sequential POSTs alternated
+  across two sockets and `connection: keep-alive` was sent unasked — so the transport uses
+  `fetch` as-is and needs no `node:`/`undici` import for keep-alive. A `fetch` can be injected
+  (`fetch` on `LoggerOptions` or the transport) for a tuned dispatcher or for tests.
+- An **undrained non-empty error body costs a new socket per request**, and so does
+  `response.body.cancel()`; `await response.text()` restores reuse. Every response is drained
+  with `text()`.
+- `keepalive: true` on `RequestInit` is the browser "survive page unload" semantic and changes
+  nothing about pooling. It is not set.
+- The concurrency cap is the queue's (§7.2); the transport itself is one request per `send`.
+
 ### 2.4 `noformat` means what it says
 
 The path segment is `noformat`: the body is ingested unparsed. There is **no documented JSON or
@@ -285,6 +298,16 @@ Recommendation: **`@geekibo/rapid7-logger`**.
 
 The core must use **only** `fetch`, `AbortController`, timers and standard JS — no `node:*`
 imports — so the same core runs in Node, Edge and Workers.
+
+`Rapid7WebhookTransport` (#11) posts each event as its own request to `/v1/noformat/{token}`
+with `content-type: text/plain` and the formatter's line plus a single trailing `\n`, with a
+10 s per-request timeout (`AbortController` + a timer, cleared after every send so an idle
+process holds no timer). It resolves `{ delivered: true }` on any 2xx — *accepted*, not seen
+(§2.6) — and `{ delivered: false, error: 'HTTP <n>' | '<cause code>' | 'timeout after <n>ms' }`
+otherwise; it never throws or rejects. The token is held in an ES private field so it cannot
+be enumerated or serialised, and nothing it reports can contain it. Its constructor throws a
+`TypeError` on an invalid token or region; `createLogger` validates first and degrades, so a
+consumer only meets that by constructing the transport directly.
 
 `ConsoleTransport` (#10) prints exactly the line the webhook transport would post — rendered by
 the formatter, so flattened, stamped and capped — which makes local output identical to what
@@ -418,11 +441,12 @@ Options, as implemented (#6):
 
 | Option | Behaviour |
 |---|---|
-| `token` | Trimmed. Absent, empty or not a GUID ⇒ console-only and **one** warning (§13). Never echoed in a message. |
+| `token` | Trimmed. Absent, empty or not a GUID ⇒ console-only and **one** warning (§13). Never echoed in a message. A valid token posts through `Rapid7WebhookTransport` (#11). |
 | `region` | Trimmed, case-insensitive; default `eu`. Unknown ⇒ console-only and one warning. |
 | `level` | Trimmed, case-insensitive; default `info`. Unknown ⇒ `info` and one warning. Typed `Level \| (string & {})` so `process.env.LOG_LEVEL ?? 'info'` type-checks. |
 | `service`, `env` | Become root bound context: `service=… env=…` on every line. |
 | `transport` | Injects a `Transport` (§4.3) and bypasses token resolution — how the Console and Memory transports are used. |
+| `fetch` | The `fetch` the webhook transport uses (default: the global one). Ignored with `transport`. |
 | `onInternalError` | `(error: Error) => void`. Default: one `console.warn`, rate-limited to one per minute per logger. A throwing handler is swallowed. |
 | `flush(timeoutMs = 2000)` | Bounded by a timer regardless of the transport. Never rejects. |
 | `format` | Full line override (§5.3). Its output is still flattened and truncated. Forwarded to the transport by #15. |
@@ -748,7 +772,10 @@ fires only for a malformed token, or for `413`, which cannot occur when §5.4's 
 first.
 
 Improvement over the .NET original: **honour `Retry-After`** on a `429` when present, capped,
-rather than using the fixed backoff. This path is defensive: no `429` has been observed from the
+rather than using the fixed backoff.
+
+As implemented so far (#11): the transport makes a **single attempt** with a 10 s timeout and
+reports the result through `SendOutcome` (§4.3); the retry policy above arrives with #12. This path is defensive: no `429` has been observed from the
 endpoint (§2.1, none up to ~164 req/s), so it is untested against the real thing.
 
 The endpoint has no idempotency or dedup, so a POST that is ingested but whose acknowledgement
