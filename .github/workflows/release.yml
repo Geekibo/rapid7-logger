@@ -1,74 +1,110 @@
-# Publishes to npm via OIDC trusted publishing. There is deliberately NO NPM_TOKEN
-# in this repository — nothing here is worth stealing.
+# Publishes to npm via OIDC trusted publishing. There is deliberately NO NPM_TOKEN in this
+# repository — nothing here is worth stealing.
 #
-# IMPORTANT: npm's trusted-publisher configuration keys on this file's NAME.
-# Renaming this file breaks publishing until npm's side is updated to match.
+# IMPORTANT: npm's trusted-publisher configuration keys on this file's NAME and on the
+# `release` environment name. Renaming either breaks publishing until npm's side is updated.
 # See docs/DESIGN.md §10.3.
+#
+# Three jobs (DESIGN §10.4): `select-mode` decides what this push to main means; `version`
+# opens or updates the "Version Packages" pull request when changesets are pending — no
+# approval, no environment; `publish` runs only when there are none and the version is
+# unpublished, i.e. right after the Version Packages PR was merged, and it waits for the
+# `release` environment reviewer. Approving that prompt IS the release decision.
 name: release
 
 on:
   push:
     branches: [main]
 
-permissions:
-  contents: read
+permissions: {}
 
 concurrency:
   group: release
   cancel-in-progress: false
 
 jobs:
-  release:
-    name: release
+  select-mode:
+    name: select-mode
     runs-on: ubuntu-latest
-    # Required reviewer gate. npm's trusted publisher is bound to this same
-    # environment name, so a run outside it cannot mint a valid OIDC token —
-    # the registry enforces it, not just this file.
-    environment: release
     permissions:
-      contents: write        # tag + GitHub release
-      id-token: write        # REQUIRED: mints the OIDC token for npm
-      pull-requests: write   # Changesets' "Version Packages" PR
+      contents: read
+    outputs:
+      mode: ${{ steps.select-mode.outputs.mode }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - id: select-mode
+        uses: changesets/action/select-mode@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
+
+  # Pending changesets ⇒ open or update "Version Packages". The PR is created with the
+  # workflow's GITHUB_TOKEN, so its `ci` run waits for a maintainer's "Approve workflows to
+  # run" click on the PR — by GitHub's design, not a PAT.
+  version:
+    name: version
+    needs: select-mode
+    if: needs.select-mode.outputs.mode == 'version'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-
-      - name: Detect toolchain
-        id: detect
-        run: |
-          if [ -f package.json ]; then
-            echo "toolchain=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "toolchain=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::No package.json yet — nothing to release."
-          fi
+          persist-credentials: false
 
       - uses: actions/setup-node@v6
-        if: steps.detect.outputs.toolchain == 'true'
         with:
-          node-version: 22          # >= 22.14 required for trusted publishing
+          node-version: 22
           cache: npm
+
+      - run: npm ci
+
+      - uses: changesets/action/version@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
+        with:
+          script: npm run version
+
+  # No changesets and an unpublished version ⇒ the release itself.
+  publish:
+    name: publish
+    needs: select-mode
+    if: needs.select-mode.outputs.mode == 'publish'
+    runs-on: ubuntu-latest
+    environment: release # required reviewer; npm's trusted publisher is bound to this name
+    permissions:
+      contents: write # tag + GitHub release
+      id-token: write # REQUIRED: mints the OIDC token for npm
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22 # >= 22.14 required for trusted publishing
+          package-manager-cache: false # no cache in a release build
 
       # Trusted publishing requires npm CLI >= 11.5.1.
       - name: Update npm
-        if: steps.detect.outputs.toolchain == 'true'
         run: npm install -g npm@latest
 
-      - name: Install
-        if: steps.detect.outputs.toolchain == 'true'
-        run: npm ci
+      - run: npm ci
 
+      # Build before test: test/node runs against dist/ and fails without it when CI is set.
       - name: Verify
-        if: steps.detect.outputs.toolchain == 'true'
-        run: npm run typecheck && npm run lint && npm test && npm run build
+        run: npm run typecheck && npm run lint && npm run build && npm test
 
-      # Opens/updates the "Version Packages" PR; publishes when that PR is merged.
       # No NODE_AUTH_TOKEN: authentication is OIDC, and provenance is automatic.
-      # v2 renamed these inputs (publish -> publish-script, version -> version-script)
-      # and github-token is now an input defaulting to github.token, not an env var.
-      - uses: changesets/action@v2
-        if: steps.detect.outputs.toolchain == 'true'
+      - uses: changesets/action/publish@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
         with:
-          publish-script: npm run release
-          version-script: npm run version
+          script: npm run release

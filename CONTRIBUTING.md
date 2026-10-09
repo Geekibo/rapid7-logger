@@ -42,18 +42,22 @@ Never commit a token, in any form.
 3. **Measure, don't reason.** If the change depends on how the endpoint behaves, post to it and
    look (`spike/webhook-contract.mjs` is the measurement script). If what you find differs from
    `docs/DESIGN.md`, update the design in the same PR and say what you measured.
-4. **Add a changeset** (`npx changeset`) for any user-visible change. That is what versions the
-   release; a PR without one is incomplete.
+4. **Add a changeset** (`npx changeset`, which needs Node 22 or later — or write the file by
+   hand; `.changeset/README.md` has the template) for any user-visible change. That is what
+   versions the release, and CI fails a PR that touches `src/` without one. A `src/` change
+   that is not user-visible takes `npx changeset --empty`; docs- and test-only PRs need none.
 5. Run `npm run typecheck && npm run lint && npm run build && npm test`, then open the PR.
    `main` is protected: changes land by reviewed pull request with green CI.
 
 ## Releases
 
-Maintainers cut releases. Merging a feature publishes nothing: Changesets opens a
-"Version Packages" PR, and **merging that PR is the release decision**. `release.yml` then
-pauses for the `release` environment reviewer and publishes through npm's OIDC trusted
-publishing — there is deliberately no `NPM_TOKEN` in this repository, and one must not be
-added.
+Maintainers cut releases. Merging a feature publishes nothing: Changesets opens or updates a
+"Version Packages" PR (its `ci` run needs a maintainer's "Approve workflows to run" click,
+because a bot opened it), and **merging that PR is the release decision**. `release.yml` then
+pauses for the `release` environment reviewer — that prompt only appears when a publish is
+about to happen — and publishes through npm's OIDC trusted publishing. There is deliberately
+no `NPM_TOKEN` in this repository, and one must not be added. Never delete a changeset from
+`main` by hand: the pending changesets are what keep the workflow off the publish path.
 
 Two things that look harmless and are not:
 

@@ -1158,7 +1158,7 @@ rapid7-logger/
 | Build | **tsup** | Dual ESM+CJS plus `.d.ts` in one config; near-zero ceremony |
 | Test | **Vitest** + **fast-check** | Native ESM, fast, good fake-timer support for the batching tests; property tests for "never contains a newline" and the byte cap |
 | Lint/format | ESLint + Prettier | Conventional; keeps contributor friction low |
-| Versioning | **Changesets** | PR-authored changelog entries; works cleanly with OSS contributions |
+| Versioning | **Changesets** | PR-authored changelog entries; works cleanly with OSS contributions. The CLI needs Node ≥ 22; `ci` enforces a changeset for `src/` changes |
 | CI | GitHub Actions | One job, `ci` (the required status check), on Node 22: typecheck, lint + Prettier, **build, then tests** (`test/node/` spawns node against `dist/`), edge-bundle check. `engines` declares a Node 20.9 floor that CI does not exercise; a matrix would rename the required check |
 
 ### 8.3 Things CI must actually assert
@@ -1380,6 +1380,45 @@ jobs:
 
 Note what is absent: **no `secrets.NPM_TOKEN`, and no `--provenance`.** Both are handled by
 OIDC. If you see a token being added back, something is misconfigured.
+
+As implemented (#25), with what was verified from `changesets/action`'s source and GitHub's
+docs:
+
+- **The workflow is three jobs, same filename and environment name.** `select-mode` (read
+  only) decides what a push to `main` means; `version` runs when changesets are pending — it
+  opens or updates the "Version Packages" PR with no environment and no approval; `publish`
+  runs only when none are pending and the version is unpublished, i.e. right after that PR was
+  merged, and it alone waits for the `release` environment reviewer. So the approval prompt
+  appears exactly when a publish is about to happen: **approving it is the release decision.**
+  With the design's single gated job, the approver could not tell from the prompt whether the
+  run would version or publish. The sub-actions are SHA-pinned to v2.1.2 (§11.4). Build runs
+  before test in the verify step, because `test/node` runs against `dist/`.
+- **The first changeset shipped with the Changesets setup itself.** `changeset publish` treats
+  a registry 404 as "unpublished" and would try to publish whatever `version` says — `0.0.0`.
+  With a pending changeset on `main`, the action's only path is "open the Version Packages
+  PR"; nothing can publish until that PR is merged (#27, after #26 configures the publisher).
+  Corollary: never delete a changeset from `main` by hand.
+- **The Version Packages PR is created with the workflow's `GITHUB_TOKEN`.** Events from that
+  token create no workflow runs — except `pull_request` opened/synchronize, which GitHub
+  creates in an "approval required" state. So `ci` (the required check) runs on that PR after
+  a maintainer clicks **"Approve workflows to run"** in its merge box — one click per update,
+  no personal access token, no GitHub App. Prerequisite: the repository (and organisation)
+  setting **"Allow GitHub Actions to create and approve pull requests"** must be on, or the
+  `version` job fails with "GitHub Actions is not permitted to create or approve pull
+  requests".
+- **`ci` enforces the changeset rule on pull requests**: `changeset status --since=origin/main`
+  with `changedFilePatterns: ["src/**"]`, so a `src/` change without a changeset fails while
+  docs-, test- and dependency-only PRs pass. A `src/` change that is not user-visible takes an
+  empty changeset. The `changeset-release/*` branch is exempt.
+- **Scripts:** `version` = `changeset version` then `npm install --package-lock-only`, because
+  `changeset version` leaves the lockfile's root entry at the old version (harmless to
+  `npm ci`, but untidy); `release` = `changeset publish`, which passes `publishConfig.access`
+  through to `npm publish`. `npm run version` is unrelated to the `npm version` command.
+- **Changelog:** the default `@changesets/cli/changelog` (`- <sha>: summary`); no extra
+  dependency. `@changesets/cli` is dev-only and needs Node ≥ 22.11 to run its CLI; the file
+  format is simple enough to write by hand on an older Node.
+- Changesets does not support npm's staged publishing, which affects the two-key option in
+  §10.3 for #29.
 
 ### 10.5 Versioning
 

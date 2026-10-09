@@ -121,8 +121,13 @@ npm run test:next-build   # the next build guard; needs npm ci --prefix test/nex
 npm run test:next-app     # builds, starts and drives examples/nextjs-app; needs npm ci --prefix examples/nextjs-app
 ```
 
-`release.yml` also calls `npm run version` and `npm run release`; those arrive with Changesets
-in #25. Until then, reject any `release` run waiting on the `release` environment.
+`release.yml` (#25) is three jobs: `select-mode`, then `version` (pending changesets ⇒ opens or
+updates the "Version Packages" PR, no approval) or `publish` (none pending ⇒ waits for the
+`release` environment reviewer — that prompt means a publish is about to happen; approve it
+only for a merged, reviewed Version Packages PR). The bot-opened PR needs "Approve workflows to
+run" before `ci` runs on it. Never delete a changeset from `main`; `ci` fails a PR that
+changes `src/` without one (`npx changeset --empty` if it is not user-visible). The Changesets
+CLI needs Node ≥ 22 — write the file by hand on 20.
 
 Single test: `npx vitest run test/unit/package.test.ts -t "zero runtime dependencies"`.
 CI runs on Node 22; the package's `engines` floor is Node 20.9 (DESIGN §8.2). TypeScript is

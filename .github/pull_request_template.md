@@ -6,7 +6,7 @@ Closes #
 
 ## Checklist
 
-- [ ] **Changeset added** (`npx changeset`) — or this change is not user-visible
+- [ ] **Changeset added** (`npx changeset`; `npx changeset --empty` for a `src/` change that is not user-visible; docs- and test-only PRs need none)
 - [ ] Tests cover the change; `npm test` passes locally
 - [ ] No credentials in code, tests, fixtures or comments
 - [ ] `docs/DESIGN.md` updated if behaviour now differs from it
