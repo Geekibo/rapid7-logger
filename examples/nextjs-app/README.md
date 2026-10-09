@@ -38,6 +38,7 @@ from npm does not need it.
 | `app/actions.ts` | Two Server Actions wrapped in `withLogging`; one throws |
 | `app/boom/page.tsx` | A Server Component that throws while rendering |
 | `app/error.tsx` + `app/api/client-error/route.ts` | The sanctioned client path: the browser posts `{ message, stack, digest }` to a Route Handler |
+| `lib/edge-log.ts` + `app/api/edge/route.ts` | An **Edge** Route Handler (`runtime = 'edge'`) using the immediate-send logger from `/edge`, wrapped by `withLogging` from `/next` |
 
 `error.tsx` is a Client Component, so it must not import the logger — that would fail the build.
 
@@ -108,6 +109,26 @@ instead, so nothing is lost either way. `flushMode: 'sync'` awaits delivery if y
 returning, because the runtime may freeze the instant the hook returns. You can see it hold the
 Route Handler's 500 for about a second; a render error's 500 is not held, since React calls the
 hook without waiting.
+
+## The Edge route
+
+`/api/edge` runs on the Edge runtime. It uses `createLogger` from `@geekibo/rapid7-logger/edge`
+— the immediate-send variant, because an Edge invocation can be torn down the moment the
+response is returned and a batching window may never elapse — wrapped by `withLogging` from
+`/next`, which works on both runtimes. `lib/edge-log.ts` starts with `import 'server-only'`
+itself, because the `/edge` entry deliberately does not (outside Next that package throws at
+load). What arrives, with `?fail=1`:
+
+```
+[17:30:12 INF] server starting service=nextjs-app env=local runtime=edge
+[17:30:12 INF] 0af7651916cd43dd8448eb211c80319c: _ edge ping service=nextjs-app env=local operation=edgePing runtime=edge
+[17:30:12 INF] 0af7651916cd43dd8448eb211c80319c: _ edgePing completed service=nextjs-app env=local operation=edgePing durationMs=1
+```
+
+`register()` runs on the first request to each Edge route, not at startup — hence the
+`runtime=edge` line there. Next 16 prints "The Edge Runtime is deprecated" at build time; it
+still builds and serves, and `onRequestError` reports Edge app routes with
+`routerKind="Pages Router"` — Next's quirk, not the logger's.
 
 ## Not used here: `withTrace`
 

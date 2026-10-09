@@ -120,7 +120,9 @@ export interface LoggerOptions {
   readonly maxBytes?: number;
   /** On by default (§6.6). `false` disables redaction entirely. */
   readonly redact?: RedactOptions | false;
-  // Queue options (§7.2). Invalid values fall back to the default with one warning.
+  // Queue options (§7.2). Invalid values fall back to the default with one warning. The Edge
+  // entry (§6.3) sends immediately: there `queueLimit` bounds the sends in flight and the other
+  // three are accepted and inert.
   /** Events one drain pass takes from the queue. Default 50. */
   readonly batchSize?: number;
   /** Wait after a partial pass before the next, in ms. Default 2000; `0` never waits. */

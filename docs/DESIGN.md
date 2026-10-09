@@ -752,6 +752,43 @@ Therefore `/edge` exports an **immediate-send** logger: every call posts straigh
 caller is expected to `await` or hand the promise to `after()`. Document the trade (added
 latency per log line) rather than pretending the batching logger works there.
 
+As implemented (#22): `/edge`'s `createLogger` is `composeLogger` over an immediate-send
+dispatcher (`src/core/immediate.ts`) instead of the queue.
+
+- **Every level call hands its event to `transport.send` synchronously.** No batching, no
+  timers of its own, no `maxConcurrency` (a holding list would be a queue). `queueLimit` bounds
+  the sends in flight — beyond it events are dropped and counted, so the caller is never blocked
+  and memory is bounded (invariant 5). `batchSize`, `flushIntervalMs` and `maxConcurrency` are
+  accepted and inert. The counters' books are the queue's, through the shared
+  `src/core/counters.ts`; `queued` is always 0.
+- **Level methods still return `void`; the promise to await is `flush()`**, which waits for
+  every send started so far (including ones started meanwhile), then `transport.flush`, bounded
+  by one timer. The pattern is `log.info(…); await log.flush()` or `after(() => log.flush())`
+  / `ctx.waitUntil(log.flush())`. Promise-returning level methods were considered and rejected:
+  the dispatcher seam cannot change the core's return type, one `Logger` type keeps
+  `withLogging`, `createRequestErrorHandler` and the contract suite valid, and forgetting an
+  `await` on every call is the easy mistake — the §5.1 note that the Edge entry "may type its
+  methods that way" is settled as *no*.
+- **The trade, measured** (`next start`, local endpoint holding each POST 1 s): an awaited
+  `flush()` held the response ~1 s; with `withLogging`'s `after()` the route answered in ~15 ms
+  and the lines arrived afterwards. Retries (§7.1) still apply per send, so a flush bound must
+  be generous relative to the backoff (200 + 400 ms).
+- **Exports:** `createLogger`, the three transports, `formatEvent`, redaction, the pure
+  `traceparent` helpers (§6.4) and the core types. Not `withLogging`/`createRequestErrorHandler`
+  (the Next entry's) and not the `AsyncLocalStorage` helpers (the Node entry's). A Next Edge
+  route combines `createLogger` from `/edge` with `withLogging` from `/next` — verified on
+  `examples/nextjs-app`'s `/api/edge`: trace inherited, `after()` defers the flush, a failure
+  rethrows and reaches `onRequestError` with `routeType=route` (and `routerKind="Pages Router"`,
+  Next's quirk for Edge app routes).
+- **Next 16.4 marks the Edge Runtime deprecated** ("use the nodejs runtime instead") but still
+  builds and serves `runtime = 'edge'` Route Handlers; `register()` runs lazily on the first
+  request to each Edge route. A local `next start` keeps sandbox timers alive, so it cannot
+  demonstrate the freeze-after-response loss the design guards against; that is #28's real
+  platforms (R13).
+- **No `import 'server-only'` in `/edge`** (§6.5): measured under esbuild's default and worker
+  conditions, the package inlines a top-level throw, so a Cloudflare Worker importing `/edge`
+  would die on load. The app's own server module carries the import instead.
+
 ### 6.4 Correlation — the highest-value feature
 
 A logger that produces unlinked lines is a modest upgrade on `console.error`. A logger that lets
@@ -841,6 +878,10 @@ As implemented (#20), with what was measured on Next 16.4.0:
    documentation — `RAPID7_TOKEN`, never `NEXT_PUBLIC_*` — plus a CI grep of `dist/` for
    `NEXT_PUBLIC_` and a test that `src/next*` never touches `process.env`.
 4. **Browser globals** are banned by ESLint over `src/**` and grepped out of `dist/*.js`.
+6. **The Edge entry carries no `server-only` import** (#22). Measured: under esbuild's default
+   and worker conditions `server-only` inlines a top-level throw, so a non-Next Edge consumer
+   (a Cloudflare Worker) importing `/edge` would fail at load. Defences 2–4 still apply, and a
+   Next app puts the import in its own server module (`examples/nextjs-app/lib/edge-log.ts`).
 5. **The done-when is a real `next build`.** `test/next-build/fixture/` is a minimal App Router
    app (pinned `next@16.4.0`, React 19.3; `@types/node` pinned because `next build` otherwise
    installs it mid-build; `turbopack.root` set to the repository root because the package is
@@ -984,7 +1025,8 @@ batching; the queue's model is Serilog's:
   An idle logger holds no timer. There is no `unref`: an active queue keeping Node alive is
   what delivers "log once and exit"; the Node entry adds `beforeExit` ⇒ flush (#15, §7.3).
 - The Edge entry (§6.3) substitutes an immediate-send dispatcher through the same composition
-  root (`composeLogger`), so `LoggerOptions` is identical on every runtime.
+  root (`composeLogger`), so `LoggerOptions` is identical on every runtime. There `queueLimit`
+  bounds the sends in flight; the other three queue options are inert.
 
 ### 7.3 Flushing — the Next.js problem the .NET package never had
 
@@ -1068,7 +1110,8 @@ copy. Who increments what:
 | `lastError` | The message of the most recent failure. Not set by a drop | The queue |
 
 One writer per field, so the transport seam (§4.3) carries no counters: a transport reports
-through `SendOutcome` and the queue keeps the books.
+through `SendOutcome` and the dispatcher — the queue on Node, the immediate dispatcher on Edge,
+both through `src/core/counters.ts` — keeps the books. On Edge `queued` is always 0.
 
 Plus an `onInternalError` callback (default: one `console.warn`, rate-limited) so a persistently
 broken token is visible somewhere without spamming stdout. Note the limit: only a *malformed*
@@ -1084,7 +1127,7 @@ succeeds silently (§2.6).
 ```
 rapid7-logger/
 ├── src/
-│   ├── core/            logger.ts  formatter.ts  queue.ts  redact.ts  levels.ts  config.ts  traceparent.ts  types.ts
+│   ├── core/            logger.ts  formatter.ts  queue.ts  immediate.ts  counters.ts  redact.ts  levels.ts  config.ts  traceparent.ts  types.ts
 │   ├── transports/      rapid7-webhook.ts  console.ts  memory.ts
 │   ├── node/            lifecycle.ts (process-level registry)  logger.ts (Node createLogger)  trace.ts (AsyncLocalStorage)
 │   ├── next/            request-error.ts  with-logging.ts  flush-timeout.ts  next-server.d.ts (ambient, not shipped) — core imports only
@@ -1101,9 +1144,7 @@ rapid7-logger/
 ├── spike/               phase 0 endpoint measurement script (#4) — not shipped
 ├── examples/
 │   ├── node-basic/      plain Node script, written as a consumer would (#17); run by test/node
-│   ├── nextjs-app/      App Router app: instrumentation.ts, a Server Action, a Route Handler (#21); run by test/next-app
-│   ├── nextjs-app/      instrumentation.ts + a Server Action + a Route Handler
-│   └── nextjs-edge/
+│   └── nextjs-app/      App Router app: instrumentation.ts, a Server Action, a Route Handler, an Edge route (#21, #22); run by test/next-app
 ├── .github/workflows/   ci.yml  release.yml
 ├── README.md  LICENSE  CONTRIBUTING.md  CODE_OF_CONDUCT.md  SECURITY.md  CHANGELOG.md
 └── package.json  tsconfig.json  tsup.config.ts  vitest.config.ts  eslint.config.js  .prettierrc.json
@@ -1486,6 +1527,7 @@ Public repos have specific hazards. These are the ones that matter:
 | R9 | **Renaming `release.yml` silently breaks publishing** | Note it in `CONTRIBUTING.md`; the filename is part of npm-side config. |
 | R10 | **Required approvals = 1 locks out a solo maintainer** (§11.2) | Start at 0 with every other rule on; raise when a second maintainer exists. |
 | R11 | Compromised devDependency in the release job can publish (§11.4) | Zero runtime deps, small reviewed devDeps, `npm ci`, pinned actions; stage-only publishing at `1.0.0`. |
+| R13 | **Next deprecates the Edge Runtime** (16.4 warns; `proxy` is Node-only) and a local `next start` cannot show the freeze-after-response loss | The `/edge` entry is runtime-agnostic (`fetch` + timers only), so it outlives Next's segment option; the example's Edge route is the build-time proof, #28 the platform proof. If Next drops `runtime = 'edge'`, verify with Vercel's `edge-runtime` VM instead. |
 | R12 | **A wrong token or region fails silently** — the endpoint answers `204` (§2.6) | Documented in the contract. Only a malformed token surfaces as an error; confirming delivery needs a Query API read-back. Config shape validated at construction (§13, settled). |
 
 **Decisions still open:**
@@ -1514,6 +1556,8 @@ Public repos have specific hazards. These are the ones that matter:
   `jp`. A value that fails is treated like an absent token: the logger
   falls back to console-only and reports it once through `onInternalError`. It never throws.
   This catches malformed tokens and mistyped regions at startup rather than as runtime `404`s.
+- *Settled with #22:* the Edge entry's level methods return `void` like every other entry; its
+  `flush()` is the promise to await (§6.3).
 - **Document what it cannot catch.** The README contract states that a `204` means *accepted*,
   not *delivered*: a well-formed wrong token or the wrong region succeeds silently, so consumers
   should search for their first events after deploying. A periodic heartbeat with a Rapid7

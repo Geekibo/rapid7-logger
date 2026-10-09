@@ -46,7 +46,7 @@ describe('examples/nextjs-app source (invariant 7)', () => {
       const text = readFileSync(file, 'utf8');
       expect(text, file).not.toMatch(/process\.env\.NEXT_PUBLIC_/);
       if (/^['"]use client['"]/m.test(text)) {
-        expect(text, file).not.toMatch(/@geekibo\/rapid7-logger|@\/lib\/log/);
+        expect(text, file).not.toMatch(/@geekibo\/rapid7-logger|@\/lib\/(log|edge-log)/);
       }
     }
   });
@@ -217,6 +217,52 @@ describe.skipIf(!installed || !hasDist)(
         expect(server.lines.slice(from).some((l) => l.includes('listSurveys completed'))).toBe(
           true,
         );
+      } finally {
+        server.setDelay(0);
+      }
+    });
+
+    it('an Edge route runs the /edge logger: register() on edge, the ping, trace inherited', async () => {
+      const from = server.lines.length;
+      const res = await fetch(`${base}/api/edge`, { headers: { traceparent } });
+      expect(res.status).toBe(200);
+      const lines = await linesSince(from);
+      // register() runs on the first request to an Edge route, not at startup.
+      expect(lines.some((l) => /server starting .*runtime=edge/.test(l))).toBe(true);
+      expect(lines.some((l) => new RegExp(`${TRACE}: _ edge ping .*runtime=edge`).test(l))).toBe(
+        true,
+      );
+      expect(
+        lines.some((l) => new RegExp(`${TRACE}: _ edgePing completed .*durationMs=\\d+`).test(l)),
+      ).toBe(true);
+    });
+
+    it('a throwing Edge route: withLogging failed + onRequestError with routeType=route', async () => {
+      const from = server.lines.length;
+      const res = await fetch(`${base}/api/edge?fail=1`);
+      expect(res.status).toBe(500);
+      const lines = await linesSince(from);
+      expect(
+        lines.some((l) => /ERR\] .*edgePing failed .*boom: deliberate edge error/.test(l)),
+      ).toBe(true);
+      const hook = lines.find(
+        (l) => l.includes('Unhandled server error') && l.includes('/api/edge'),
+      );
+      // routerKind is not asserted: Next reports "Pages Router" for Edge app routes.
+      expect(hook).toContain('routeType=route');
+      expect(hook).toContain('path="/api/edge?fail=1"');
+      expect(hook).toContain('method=GET');
+    });
+
+    it('on Edge too, withLogging flushes after the response', async () => {
+      server.setDelay(1000);
+      try {
+        const from = server.lines.length;
+        const started = performance.now();
+        expect((await fetch(`${base}/api/edge`)).status).toBe(200);
+        expect(performance.now() - started).toBeLessThan(700);
+        await sleep(3500);
+        expect(server.lines.slice(from).some((l) => l.includes('edgePing completed'))).toBe(true);
       } finally {
         server.setDelay(0);
       }
