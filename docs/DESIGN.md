@@ -299,6 +299,11 @@ Recommendation: **`@geekibo/rapid7-logger`**.
 The core must use **only** `fetch`, `AbortController`, timers and standard JS — no `node:*`
 imports — so the same core runs in Node, Edge and Workers.
 
+The Node entry (`src/index.ts`, #15) re-exports a `createLogger` that wraps the core one and
+registers lifecycle flush hooks (§7.3) through one process-level registry under `src/node/`;
+it adds `close()` and a `lifecycle` option on Node-only types, leaving the core types
+runtime-agnostic. The Edge and Next entries import from the core, never from the Node entry.
+
 `Rapid7WebhookTransport` (#11) posts each event as its own request to `/v1/noformat/{token}`
 with `content-type: text/plain` and the formatter's line plus a single trailing `\n`, with a
 10 s per-request timeout (`AbortController` + a timer, cleared after every send so an idle
@@ -447,6 +452,8 @@ Options, as implemented (#6):
 | `service`, `env` | Become root bound context: `service=… env=…` on every line. |
 | `transport` | Injects a `Transport` (§4.3) and bypasses token resolution — how the Console and Memory transports are used. |
 | `fetch` | The `fetch` the webhook transport uses (default: the global one). Ignored with `transport`. |
+| `lifecycle` *(Node entry only)* | `false` to register no process hooks; `{ timeoutMs }` (default 2000) bounds the flush each hook runs (§7.3). |
+| `close(timeoutMs?)` *(Node entry only)* | Unregisters the logger from the hooks and flushes it, bounded. Idempotent. |
 | `onInternalError` | `(error: Error) => void`. Default: one `console.warn`, rate-limited to one per minute per logger. A throwing handler is swallowed. |
 | `flush(timeoutMs = 2000)` | Bounded by a timer regardless of the transport. Never rejects. |
 | `format` | Full line override (§5.3). Its output is still flattened and truncated. Forwarded to the transport by #15. |
@@ -832,7 +839,7 @@ batching; the queue's model is Serilog's:
   Events enqueued during a flush are included; after a timeout the queue keeps draining.
 - **Timers:** only the inter-pass wait and the flush bound exist, and only while there is work.
   An idle logger holds no timer. There is no `unref`: an active queue keeping Node alive is
-  what delivers "log once and exit"; #15 adds `beforeExit` ⇒ flush.
+  what delivers "log once and exit"; the Node entry adds `beforeExit` ⇒ flush (#15, §7.3).
 - The Edge entry (§6.3) substitutes an immediate-send dispatcher through the same composition
   root (`composeLogger`), so `LoggerOptions` is identical on every runtime.
 
@@ -863,6 +870,37 @@ Three mitigations, all of which the package should support:
 
 Recommended default: **batch everything, but flush eagerly on `error` and above.** You lose a
 little efficiency on the lines that matter least and lose nothing on the lines that matter most.
+
+As implemented for Node (#15), measured on Node 20.20 before the change: "log once and exit"
+already delivered (57 ms; an in-flight `fetch` keeps the loop alive), but **`SIGTERM` during a
+burst delivered 0 of 200 lines** — the default disposition kills the process in ~20 ms. The
+Node `createLogger` therefore registers, once per process, handlers for `SIGTERM`, `SIGINT`
+and `beforeExit`:
+
+- **Signals.** Ownership is decided when the signal arrives: if every listener is ours, the
+  library owns the exit; otherwise the application's handler does. In both cases every
+  registered logger is flushed, each bounded by its `lifecycle.timeoutMs` (default 2 s). When
+  we own the exit, our listener is then removed (restoring the default disposition) and the
+  signal is re-raised with `process.kill(process.pid, signal)`, so the process dies the
+  conventional way (`signalCode === 'SIGTERM'`, status 143 in a shell). When the application
+  has a handler, nothing more is done: it decides how to exit, with a drained queue. A second
+  signal during a flush re-raises at once. The library never calls `process.exit()`.
+- **The dual-package case.** The package ships ESM and CJS; an app that loads both gets two
+  registries. Listeners are tagged with `Symbol.for('@geekibo/rapid7-logger/lifecycle')` so
+  each copy recognises the other as "ours", and only the copy that removes the last tagged
+  listener re-raises — exactly one `kill`.
+- **`beforeExit`** flushes only loggers with something queued and otherwise returns
+  synchronously; that guard is what ends Node's re-fire cycle (flushing schedules async work,
+  which makes `beforeExit` fire again).
+- Hooks are installed on the first `createLogger` and removed when the last logger is
+  `close()`d, so importing the package has no side effect (`sideEffects: false` stays honest).
+- Caveats: an application handler that calls `process.exit()` synchronously wins — such
+  handlers should `await log.flush()` or `await log.close()` first; `process.exit()` anywhere
+  skips `beforeExit` and every hook, by Node's design. On Windows `SIGTERM` listeners never
+  fire; `SIGINT` does.
+- Measured after the change (integration tests against the built entry): the burst case
+  delivers 200 of 200 and exits by the signal; against a server that never answers, the
+  process exits within the bound rather than waiting for the queue.
 
 ### 7.4 Self-observability
 
@@ -905,12 +943,14 @@ rapid7-logger/
 ├── src/
 │   ├── core/            logger.ts  formatter.ts  queue.ts  redact.ts  levels.ts  config.ts  types.ts
 │   ├── transports/      rapid7-webhook.ts  console.ts  memory.ts
-│   ├── index.ts         Node entry  (lifecycle hooks, AsyncLocalStorage)
+│   ├── node/            lifecycle.ts (process-level registry)  logger.ts (Node createLogger)
+│   ├── index.ts         Node entry  (re-exports src/node + core; AsyncLocalStorage in #16)
 │   ├── next.ts          Next entry  ('server-only', withLogging, onRequestError, after())
 │   └── edge.ts          Edge entry  (immediate-send)
 ├── test/
 │   ├── unit/            fake fetch; formatter, redaction, retry, queue bounds
 │   ├── contract/        Transport invariants: never throws, flush is bounded
+│   ├── node/            lifecycle integration: spawns node against dist/ (build first)
 │   └── live/            gated integration test (§9.2)
 ├── spike/               phase 0 endpoint measurement script (#4) — not shipped
 ├── examples/
@@ -931,7 +971,7 @@ rapid7-logger/
 | Test | **Vitest** + **fast-check** | Native ESM, fast, good fake-timer support for the batching tests; property tests for "never contains a newline" and the byte cap |
 | Lint/format | ESLint + Prettier | Conventional; keeps contributor friction low |
 | Versioning | **Changesets** | PR-authored changelog entries; works cleanly with OSS contributions |
-| CI | GitHub Actions | One job, `ci` (the required status check), on Node 22: typecheck, lint + Prettier, tests, build, edge-bundle check. `engines` declares a Node 20.9 floor that CI does not exercise; a matrix would rename the required check |
+| CI | GitHub Actions | One job, `ci` (the required status check), on Node 22: typecheck, lint + Prettier, **build, then tests** (`test/node/` spawns node against `dist/`), edge-bundle check. `engines` declares a Node 20.9 floor that CI does not exercise; a matrix would rename the required check |
 
 ### 8.3 Things CI must actually assert
 
@@ -1303,8 +1343,11 @@ Public repos have specific hazards. These are the ones that matter:
    and the npm scope `@geekibo`. Confirm both, and **claim the `@geekibo` scope on npmjs early** —
    scope squatting is real and the name is load-bearing in every example here.
 2. **Default `flushMode`** — recommend batch, with eager flush at `error` and above (§7.3).
-   The queue (#9) already drains eagerly on `error`+ by default; whether a `flushMode: 'sync'`
-   option that *awaits* delivery is also wanted is #15's call.
+   The queue (#9) already drains eagerly on `error`+ by default. *Settled for the Node entry
+   (#15):* no `flushMode: 'sync'` option — it would turn the level methods into promises
+   (reversing the #6 decision), and `log.error(…); await log.flush()` already awaits delivery
+   because the queue drains eagerly on `error`+. `withLogging` (#19) may still offer its own
+   `flushMode`.
 3. **Whether to ship `withLogging` in v1** or keep v1 to the primitive logger. It is the piece
    most likely to need redesign after real use; shipping it in `0.x` is fine, in `1.0` less so.
 4. **Require signed commits?** (§11.1) Strong, but it adds real contributor friction and can
