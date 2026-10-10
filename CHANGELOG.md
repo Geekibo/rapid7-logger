@@ -1,5 +1,11 @@
 # @geekibo/rapid7-logger
 
+## 0.1.1
+
+### Patch Changes
+
+- d3542e4: README rewritten for the npm page: a configuration and API reference, and the development roadmap removed.
+
 ## 0.1.0
 
 ### Minor Changes
