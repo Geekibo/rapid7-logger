@@ -1293,11 +1293,11 @@ enter:
 
 | Field | Value |
 |---|---|
-| Organization or user | `geekibo` |
+| Organization or user | `Geekibo` — the **GitHub** login, case-sensitive; not the npm scope |
 | Repository | `rapid7-logger` |
 | Workflow filename | `release.yml` — **filename only**, must live in `.github/workflows/` |
 | Environment | `release` — optional, but take it (§11.3) |
-| Allowed actions | See the two-key option below |
+| Allowed actions | **tick `npm publish`** — see the two-key option below |
 
 Five sharp edges, each of which has burned someone:
 
@@ -1312,7 +1312,9 @@ Five sharp edges, each of which has burned someone:
 5. A package may have at most **10** trusted publishers.
 
 **The two-key release option.** `npm stage publish` is always permitted; `npm publish` and
-`npm dist-tag` are separately enablable. If you allow **only `npm stage publish`**, CI can
+`npm dist-tag` are separately enablable — and a configuration created after 2026-09-03
+**defaults to stage-only**. `changeset publish` runs plain `npm publish`, so the box must be
+ticked or the first OIDC release fails with `ENEEDAUTH`. If you allow **only `npm stage publish`**, CI can
 *stage* a version but cannot release it — a human must then approve the staged version
 interactively (CLI or npmjs.com), which **requires 2FA**. CI alone can never publish.
 
@@ -1324,6 +1326,24 @@ and the consequence of a bad one gets larger.
 Separately, under **Settings → Publishing access**, enable **require 2FA and disallow tokens**.
 This does not affect trusted publishing (OIDC isn't a token) but it closes the side door — a
 stolen credential cannot publish, because no credential is authorised to.
+
+**What the first publish actually looked like (2026-10-10).** The trusted-publisher form lives
+on an *existing* package's settings page, and npm offers no way to configure one for a name
+that is not on the registry yet. So `0.1.0` was published **by hand**, once, from the
+maintainer's laptop (Node 20.20, npm 10.8.2, interactive login with 2FA) from the merged
+"Version Packages" commit, with the workflow's waiting `publish` run cancelled. Three things
+were not in the documentation:
+
+- npm routed that publish through **staged publishing** on its own: the registry first showed
+  a public two-file stub, **`0.0.0-stage`** ("Temporary package placeholder for staged
+  publishing"), and `0.1.0` went live as `latest` about a minute later. The stub stays in the
+  version list. It matches no caret range and is harmless; it may be unpublished within 72 h.
+- A manual publish carries **no provenance**. The first attested release is the first one
+  through `release.yml`.
+- The npm floors (§10.2) are for OIDC only; a manual publish works on any npm.
+
+The trusted publisher is therefore configured **immediately before the next release** — not
+earlier, because of the 2-day expiry in edge 3 — and from then on §10.4 applies unchanged.
 
 ### 10.4 Release flow
 
