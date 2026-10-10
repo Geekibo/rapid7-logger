@@ -1,6 +1,6 @@
 {
   "name": "@geekibo/rapid7-logger",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Reliable Rapid7 InsightOps logging for Node.js and Next.js",
   "keywords": [
     "rapid7",
