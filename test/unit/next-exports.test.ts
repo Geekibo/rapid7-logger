@@ -6,6 +6,7 @@ import * as next from '../../src/next.js';
 describe('the Next entry point', () => {
   it('exports exactly these runtime names', () => {
     expect(Object.keys(next).sort()).toEqual([
+      'captureConsole',
       'createLogger',
       'createRequestErrorHandler',
       'withLogging',

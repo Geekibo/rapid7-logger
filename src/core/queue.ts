@@ -1,3 +1,4 @@
+import { suppressingCapture } from './console-capture.js';
 import type { QueueOptions } from './config.js';
 import { createAccounting, type Counters } from './counters.js';
 import type { InternalErrorHandler, LogEvent, SendOutcome, Transport } from './types.js';
@@ -76,7 +77,7 @@ export function createQueue({ transport, counters, report, options }: QueueDeps)
       inFlight += 1;
       let result: Promise<void | SendOutcome>;
       try {
-        result = transport.send(event);
+        result = suppressingCapture(() => transport.send(event));
       } catch (cause) {
         fail('transport.send threw', cause);
         inFlight -= 1;

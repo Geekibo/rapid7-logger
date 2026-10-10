@@ -1,3 +1,4 @@
+import { suppressingCapture } from './console-capture.js';
 import { createAccounting } from './counters.js';
 import type { Dispatcher, QueueDeps } from './queue.js';
 import type { LogEvent, SendOutcome } from './types.js';
@@ -32,7 +33,7 @@ export function createImmediateDispatcher({
     }
     let result: Promise<void | SendOutcome>;
     try {
-      result = transport.send(event);
+      result = suppressingCapture(() => transport.send(event));
     } catch (cause) {
       fail('transport.send threw', cause);
       return;

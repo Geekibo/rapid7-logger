@@ -22,6 +22,13 @@ export function createLogger(options: LoggerOptions = {}): Logger {
   return composeLogger(options, createImmediateDispatcher);
 }
 
+export {
+  captureConsole,
+  type ConsoleCaptureMethod,
+  type ConsoleCaptureOptions,
+  type ConsoleCaptureTarget,
+  type RestoreConsole,
+} from './core/console-capture.js';
 export { formatEvent } from './core/formatter.js';
 export {
   ConsoleTransport,

@@ -13,6 +13,14 @@ import 'server-only';
 // those, import from '@geekibo/rapid7-logger' instead.
 export { createLogger } from './core/logger.js';
 export {
+  captureConsole,
+  type ConsoleCaptureMethod,
+  type ConsoleCaptureOptions,
+  type ConsoleCaptureTarget,
+  type RestoreConsole,
+} from './core/console-capture.js';
+
+export {
   withLogging,
   type AfterScheduler,
   type FlushMode,

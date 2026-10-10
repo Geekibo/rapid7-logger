@@ -1,6 +1,7 @@
 import { ConsoleTransport } from '../transports/console.js';
 import { Rapid7WebhookTransport } from '../transports/rapid7-webhook.js';
 import { resolveConfig, resolveLevel, resolveQueueOptions } from './config.js';
+import { uncaptured } from './console-capture.js';
 import { newCounters, type Counters } from './counters.js';
 import { createQueue, type Dispatcher, type QueueDeps } from './queue.js';
 import { createRedactor, type Redactor } from './redact.js';
@@ -43,7 +44,8 @@ interface Reporter {
 }
 
 // The default handler is one rate-limited console.warn, so a persistently broken transport is
-// visible somewhere without spamming stdout (§7.4).
+// visible somewhere without spamming stdout (§7.4). It goes through the original method so a
+// captured console (§6.7) cannot turn a warning into an event into a warning.
 function makeReporter(handler: InternalErrorHandler | undefined): Reporter {
   if (handler) {
     const guarded: InternalErrorHandler = (error) => {
@@ -57,7 +59,7 @@ function makeReporter(handler: InternalErrorHandler | undefined): Reporter {
   }
   const warn: InternalErrorHandler = (error) => {
     try {
-      console.warn(`[rapid7-logger] ${error.message}`);
+      (uncaptured(console, 'warn') ?? console.warn)(`[rapid7-logger] ${error.message}`);
     } catch {
       // Nothing left to report to.
     }
