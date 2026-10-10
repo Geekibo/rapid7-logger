@@ -128,10 +128,10 @@ only for a merged, reviewed Version Packages PR). The bot-opened PR needs "Appro
 run" before `ci` runs on it. Never delete a changeset from `main`; `ci` fails a PR that
 changes `src/` without one (`npx changeset --empty` if it is not user-visible). The Changesets
 CLI needs Node ≥ 22 — write the file by hand on 20.
-`0.1.0` is on npm (#27). It was published by hand because npm cannot bind a trusted publisher
-to an unpublished name (§10.3, "What the first publish actually looked like"); the trusted
-publisher is configured on npmjs.com right before the next Version Packages PR is merged, and
-every later release goes through `release.yml`.
+`0.1.0` was published by hand because npm cannot bind a trusted publisher to an unpublished
+name (§10.3, "What the first publish actually looked like"). The trusted publisher is now
+configured and validated: `0.1.1` and every later release go through `release.yml` with
+provenance (#26).
 
 Single test: `npx vitest run test/unit/package.test.ts -t "zero runtime dependencies"`.
 CI runs on Node 22; the package's `engines` floor is Node 20.9 (DESIGN §8.2). TypeScript is
