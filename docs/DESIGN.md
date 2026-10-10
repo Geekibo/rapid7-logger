@@ -321,6 +321,10 @@ them as lines; it is unbounded test infrastructure, not a production sink. Both 
 for use as `createLogger({ transport })`. Anything Node-specific
 (`process.on('SIGTERM')`) lives in the Node entry point.
 
+`captureConsole` (#58, §6.7) is core too: it forwards selected `console` methods into a logger,
+and the console fallback and the internal-error reporter write through the stashed originals so
+it can never recurse. All three entries export it.
+
 ### 4.2 Package exports
 
 ```json
@@ -937,6 +941,58 @@ override or printed by the console fallback:
   `defaults: false` drops the built-ins; `replacement` defaults to `[redacted]`.
 - The redacted context is a fresh deep copy, so later mutation of a logged object cannot reach
   the queue (§7.2).
+
+### 6.7 Capturing console output
+
+An application has hundreds of `console.*` calls and nobody is going to replace them all. The
+value of this package is in the level, the trace stamp and redaction — none of which a
+`console.error` line has — so the bridge is an **opt-in** that forwards selected console methods
+into a logger, and nothing changes for an application that never calls it (#58):
+
+```ts
+import { createLogger, captureConsole } from '@geekibo/rapid7-logger';        // or /next, /edge
+
+const log = createLogger({ token: process.env.RAPID7_TOKEN, service: 'my-app' });
+const restore = captureConsole(log, {
+  levels: { warn: 'warn', error: 'error' },   // the default
+  passthrough: true,                           // the default: the original still runs
+});
+```
+
+In Next it belongs in `instrumentation.ts`'s `register()`, next to `onRequestError`, which runs
+once per runtime.
+
+**Defaults.** Only `warn` and `error` forward. `console.log` in a Next app carries the
+framework's own chatter, and on Vercel or Azure it is already collected; forwarding it is a
+choice, made with `levels: { log: 'info' }`. `false` or an unknown level leaves a method alone.
+`passthrough` stays on so stdout and the platform's viewer still see the line.
+
+**Argument mapping.** A leading string is the message, with `%s %d %i %f %j %o %O %%`
+consumed from the following arguments as `util.format` would (the core cannot import
+`node:util`, so the interpolator is its own). Of what remains, the first `Error` or error-like
+value becomes the event's error, plain objects merge into the context, and any other object
+(array, `Map`, class instance) lands under `argN` — objects are never stringified into the
+message, so key redaction always walks them. Primitives are appended. An empty message becomes
+`(console.<method>)`.
+
+**No recursion — the rule.** With no usable token the logger falls back to `ConsoleTransport`,
+and its own rate-limited warnings go to `console.warn`. If those wrote to a captured console,
+a missing token would be an infinite loop. So the originals are stashed per console object in
+the core (`src/core/console-capture.ts`), and:
+
+- `ConsoleTransport.send` resolves the method through `uncaptured(target, method)` **at send
+  time**, so capture after `createLogger` — the normal order — is safe, and so is before.
+- The default internal-error reporter warns through `uncaptured(console, 'warn')`.
+- Both dispatchers run the synchronous part of `transport.send` under `suppressingCapture`, so
+  a user transport that writes to the console from `send()` does not feed itself. A write after
+  an `await` inside `send` is outside that guard; a custom transport that logs to the console
+  should hold its own reference to the originals.
+
+Capturing an already-captured console restores it first (last call wins); `restore()` only puts
+a method back if it is still ours, so something that patched after us is left alone. Measured
+in `test/unit/console-capture.test.ts`: a console-only logger plus capture plus
+`console.error('x')` produces exactly two writes through the original `error` (the passthrough
+call, then the rendered line) and nothing after.
 
 ---
 

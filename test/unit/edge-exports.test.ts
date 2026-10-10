@@ -16,6 +16,7 @@ describe('the Edge entry point', () => {
       'MemoryTransport',
       'REGIONS',
       'Rapid7WebhookTransport',
+      'captureConsole',
       'childOf',
       'createLogger',
       'createRedactor',

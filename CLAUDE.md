@@ -102,7 +102,10 @@ reached by a dynamic `import('next/server')` that must stay dynamic, and
 `src/next/next-server.d.ts` is an ambient stand-in that must never ship); `src/edge.ts` (#22)
 is the same core over `src/core/immediate.ts` — every call sends at once, `flush()` awaits
 them, level methods still return `void`, and it deliberately carries no `import 'server-only'`
-(that would throw at load in a non-Next worker). Both must import from the core, never from `src/index.ts` or `src/node/`. Work proceeds phase by phase (§14).
+(that would throw at load in a non-Next worker). Both must import from the core, never from `src/index.ts` or `src/node/`. `captureConsole`
+(#58, `src/core/console-capture.ts`, §6.7) is opt-in console forwarding; the console transport
+and the internal reporter write through `uncaptured()` and the dispatchers wrap `send` in
+`suppressingCapture()` so it cannot recurse — keep both when touching them. Work proceeds phase by phase (§14).
 The target layout is §8.1 and the `exports` map is §4.2 — follow them rather than inventing a
 structure.
 

@@ -60,6 +60,26 @@ The Node entry flushes on `SIGTERM`, `SIGINT` and `beforeExit`, and adds `close(
 explicit shutdown. Without a token, or with a malformed one, the logger writes to the console
 and warns once; it never throws.
 
+## Capturing console output
+
+You don't have to replace every `console.error`. Opt in and the calls you already have get a
+level, the trace stamp and redaction:
+
+```ts
+import { createLogger, captureConsole } from '@geekibo/rapid7-logger';
+
+export const log = createLogger({ token: process.env.RAPID7_TOKEN, service: 'my-app' });
+const restore = captureConsole(log); // warn → warn, error → error; restore() undoes it
+```
+
+By default only `console.warn` and `console.error` forward, and the original method still runs
+so stdout and your platform's log viewer see the line as before. `levels: { log: 'info' }`
+forwards `console.log` too; `passthrough: false` makes the logger the only output. A leading
+string is the message (with `%s`/`%d`/`%j` interpolation), an `Error` argument becomes the
+error, plain objects become context, so redaction applies to them. In Next, call it once in
+`instrumentation.ts`'s `register()`. The console fallback and the logger's own warnings always
+write through the original methods, so capturing with no token configured does not loop.
+
 ## Next.js
 
 ```ts

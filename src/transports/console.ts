@@ -1,9 +1,11 @@
+import { uncaptured } from '../core/console-capture.js';
 import { createFormatter } from '../core/formatter.js';
 import type { FormatterOptions, Level, LineFormatter, LogEvent, Transport } from '../core/types.js';
 
 // The fallback when there is no usable token (§5.1), and the local-development transport. It
 // prints exactly the line the webhook transport would post — flattened, stamped, capped — so
-// what you see locally is what Rapid7 would store.
+// what you see locally is what Rapid7 would store. It writes through the ORIGINAL console
+// method, resolved at send time, so `captureConsole` (§6.7) can never feed it back its own line.
 
 type ConsoleMethod = 'debug' | 'info' | 'warn' | 'error';
 
@@ -34,7 +36,11 @@ export class ConsoleTransport implements Transport {
 
   send(event: LogEvent): Promise<void> {
     try {
-      this.target[METHOD[event.level] ?? 'info'](this.format(event));
+      const method = METHOD[event.level] ?? 'info';
+      (uncaptured(this.target, method) ?? this.target[method]).call(
+        this.target,
+        this.format(event),
+      );
     } catch {
       // A broken console must not take the application down (invariant 3).
     }

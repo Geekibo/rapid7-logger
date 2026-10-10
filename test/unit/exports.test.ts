@@ -14,6 +14,7 @@ describe('the Node entry point', () => {
       'MemoryTransport',
       'REGIONS',
       'Rapid7WebhookTransport',
+      'captureConsole',
       'childOf',
       'createLogger',
       'createRedactor',

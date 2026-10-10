@@ -23,6 +23,13 @@ export {
   type TraceContext,
   type TraceSource,
 } from './core/traceparent.js';
+export {
+  captureConsole,
+  type ConsoleCaptureMethod,
+  type ConsoleCaptureOptions,
+  type ConsoleCaptureTarget,
+  type RestoreConsole,
+} from './core/console-capture.js';
 export { formatEvent } from './core/formatter.js';
 export {
   ConsoleTransport,
