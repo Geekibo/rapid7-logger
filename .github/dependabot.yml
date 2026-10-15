@@ -7,6 +7,14 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    ignore:
+      # typescript-eslint 8 caps its peer range below 6.1; move with it, by hand.
+      - dependency-name: typescript
+        versions: [">=6.0.0"]
+      # Kept at the lowest major the toolchain accepts (Vitest 5: ^22), so the types stay
+      # as close to the engines floor (Node 20.9) as possible.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
     groups:
       dev-minor-patch:
         patterns: ["*"]

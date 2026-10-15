@@ -13,7 +13,8 @@ npm run build     # dist/ — the Node integration tests run against it
 npm test
 ```
 
-Node 20.9 or later. There is nothing else to install, and **no credentials are needed**: the
+Node 22.18 or later to develop (tsup 9 and Vitest 5 need it; the published package still
+supports Node 20.9). There is nothing else to install, and **no credentials are needed**: the
 unit, contract and Node integration tests run against fakes and a local HTTP server.
 
 ## The test tiers
@@ -42,8 +43,8 @@ Never commit a token, in any form.
 3. **Measure, don't reason.** If the change depends on how the endpoint behaves, post to it and
    look (`spike/webhook-contract.mjs` is the measurement script). If what you find differs from
    `docs/DESIGN.md`, update the design in the same PR and say what you measured.
-4. **Add a changeset** (`npx changeset`, which needs Node 22 or later — or write the file by
-   hand; `.changeset/README.md` has the template) for any user-visible change. That is what
+4. **Add a changeset** (`npx changeset`, or write the file by hand;
+   `.changeset/README.md` has the template) for any user-visible change. That is what
    versions the release, and CI fails a PR that touches `src/` without one. A `src/` change
    that is not user-visible takes `npx changeset --empty`; docs- and test-only PRs need none.
 5. Run `npm run typecheck && npm run lint && npm run build && npm test`, then open the PR.
