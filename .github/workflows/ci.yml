@@ -34,7 +34,7 @@ jobs:
             echo "::notice::No package.json yet — the toolchain lands in phase 1. Nothing to check."
           fi
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         if: steps.detect.outputs.toolchain == 'true'
         with:
           node-version: 22
@@ -122,7 +122,7 @@ jobs:
             echo "toolchain=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         if: steps.detect.outputs.toolchain == 'true'
         with:
           node-version: 22
@@ -164,7 +164,7 @@ jobs:
             echo "toolchain=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         if: steps.detect.outputs.toolchain == 'true'
         with:
           node-version: 22
