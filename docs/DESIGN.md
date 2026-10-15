@@ -1215,7 +1215,7 @@ rapid7-logger/
 | Test | **Vitest** + **fast-check** | Native ESM, fast, good fake-timer support for the batching tests; property tests for "never contains a newline" and the byte cap |
 | Lint/format | ESLint + Prettier | Conventional; keeps contributor friction low |
 | Versioning | **Changesets** | PR-authored changelog entries; works cleanly with OSS contributions. The CLI needs Node ≥ 22; `ci` enforces a changeset for `src/` changes |
-| CI | GitHub Actions | One job, `ci` (the required status check), on Node 22: typecheck, lint + Prettier, **build, then tests** (`test/node/` spawns node against `dist/`), edge-bundle check. `engines` declares a Node 20.9 floor that CI does not exercise; a matrix would rename the required check |
+| CI | GitHub Actions | One job, `ci` (the required status check), on Node 22: typecheck, lint + Prettier, **build, then tests** (`test/node/` spawns node against `dist/`), edge-bundle check. `engines` declares a Node 20.9 floor that CI does not exercise; a matrix would rename the required check. The dev toolchain itself (tsup 9, Vitest 5) needs Node ≥ 22.18, which does not touch `engines` |
 
 ### 8.3 Things CI must actually assert
 
